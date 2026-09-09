@@ -160,3 +160,6 @@ Report:
 - performance under low/medium/high congestion
 
 Do not claim "quantum advantage". This is quantum-inspired classical optimization. The defensible claim is improved empirical search behaviour under the tested instances.
+---
+## Execution on Local Machine
+See `./documentation/run.md`
