@@ -1,0 +1,16 @@
+#metadata
+.DS_Store
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*/__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+
+# App cache
+cache/
+
+# benchmark csv
+vrp_*
