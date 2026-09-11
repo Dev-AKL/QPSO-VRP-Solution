@@ -6,8 +6,11 @@ import math
 @dataclass
 class Customer:
     node: int
-    demand: float = 1.0
-    service_time_s: float = 0.0
+    demand: float
+    # Add these three lines for Time Windows:
+    ready_time: float = 0.0
+    due_time: float = 86400.0  # Default to end of the day (24 hours in seconds)
+    service_time: float = 300.0 # 5 minutes to unload at the location
 
 
 @dataclass

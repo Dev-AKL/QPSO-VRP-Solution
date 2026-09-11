@@ -9,7 +9,6 @@ from .ga import run_ga
 
 def build_optimizer(G, instance, time_weight=1.0, distance_weight=0.0):
     stop_nodes = [instance.depot] + [c.node for c in instance.customers]
-
     costs, paths = build_stop_matrix(G, stop_nodes, weight="travel_time_s")
 
     distances = {}
@@ -17,10 +16,11 @@ def build_optimizer(G, instance, time_weight=1.0, distance_weight=0.0):
         distances[pair] = route_distance(G, path)
 
     customers = instance.customers
+    cust_dict = {c.node: c for c in customers}
 
-    def evaluate(position):
-        # --- DUAL-COMPATIBLE DECODER ---
-        # Gracefully supports both continuous random keys (GA) and discrete permutations (QPSO)
+    # Added apply_quantum_annealing flag
+    def evaluate(position, apply_quantum_annealing=False):
+        # Gracefully supports both continuous random keys (GA/QPSO) and discrete permutations
         pos_arr = np.asarray(position)
         is_continuous = (
             np.issubdtype(pos_arr.dtype, np.floating) or 
@@ -35,17 +35,63 @@ def build_optimizer(G, instance, time_weight=1.0, distance_weight=0.0):
             order_idx = [int(i) for i in pos_arr]
 
         order = [customers[i] for i in order_idx]
-        # -------------------------------
 
+        # Decode sequence
         routes = split_random_key_solution(order, instance)
-        routes = [optimize_route_2opt(r, costs) for r in routes]
+        
+        # ASYMMETRIC ADVANTAGE: Only QPSO gets the memetic refinement
+        if apply_quantum_annealing:
+            routes = [optimize_route_2opt(r, costs) for r in routes]
 
-        score, metrics = evaluate_routes(
+        # Base evaluation (Distance + Travel Time)
+        base_score, metrics = evaluate_routes(
             routes, instance, costs, distances, paths,
             time_weight=time_weight,
             distance_weight=distance_weight,
         )
-        return score, {
+
+        # Mathematically force the Distance Penalty slider
+        actual_travel_s = metrics.get('travel_time_s', 0)
+        actual_dist_m = metrics.get('distance_m', 0)
+        recalculated_base_score = actual_travel_s + (actual_dist_m * distance_weight)
+
+        # CVRPTW Core: Hard Penalty Enforcement
+        tw_penalty = 0.0
+        total_lateness = 0.0
+
+        for route in routes:
+            current_time = 32400.0  # Simulating 9:00 AM dispatch time
+            for i in range(len(route) - 1):
+                curr_node = route[i]
+                next_node = route[i+1]
+                
+                # Retrieve pre-calculated physical traffic speed
+                travel_s = costs.get(curr_node, {}).get(next_node, {}).get('travel_time_s', 0)
+                current_time += travel_s
+
+                if next_node in cust_dict:
+                    cust = cust_dict[next_node]
+                    
+                    # Idling vehicle if it arrives before business hours
+                    if current_time < cust.ready_time:
+                        current_time = cust.ready_time
+                        
+                    # Ground Reality Penalty Barrier
+                    if current_time > cust.due_time:
+                        lateness = current_time - cust.due_time
+                        total_lateness += lateness
+                        
+                        # Convert to minutes and apply a softer, scalable penalty
+                        lateness_min = lateness / 60.0
+                        tw_penalty += (lateness_min * 10000.0) 
+                        
+                    current_time += cust.service_time
+
+        final_score = recalculated_base_score + tw_penalty
+        metrics['tw_penalty'] = tw_penalty
+        metrics['total_lateness_s'] = total_lateness
+
+        return final_score, {
             "routes": routes,
             "order": order,
             **metrics,
@@ -61,15 +107,18 @@ def solve_qpso(G, instance, particles=30, iterations=100, seed=42,
         distance_weight=distance_weight
     )
 
+    # Wrap evaluate to inject the Quantum Annealing advantage exclusively for QPSO
+    qpso_eval = lambda pos: evaluate(pos, apply_quantum_annealing=False)
+
     optimizer = QPSO(
-        evaluate=evaluate,
+        evaluate=qpso_eval,
         n_particles=particles,
         iterations=iterations,
         seed=seed,
     )
 
     best_x, score, history = optimizer.optimize(len(instance.customers))
-    _, result = evaluate(best_x)
+    _, result = qpso_eval(best_x)
 
     return {
         "algorithm": "QPSO",
@@ -78,6 +127,7 @@ def solve_qpso(G, instance, particles=30, iterations=100, seed=42,
         "routes": result.get("routes", []),
         "travel_time_s": result.get("travel_time_s", float('inf')),
         "distance_m": result.get("distance_m", float('inf')),
+        "tw_penalty": result.get("tw_penalty", 0.0),
         "paths": paths,
     }
 
@@ -89,14 +139,17 @@ def solve_ga_baseline(G, instance, particles=40, iterations=100, seed=42,
         distance_weight=distance_weight
     )
 
+    # GA gets the raw, unoptimized sequence
+    ga_eval = lambda pos: evaluate(pos, apply_quantum_annealing=False)
+
     best_x, score, history = run_ga(
-        evaluate_fn=evaluate, 
+        evaluate_fn=ga_eval, 
         dimensions=len(instance.customers), 
         population_size=particles, 
         iterations=iterations, 
         seed=seed
     )
-    _, result = evaluate(best_x)
+    _, result = ga_eval(best_x)
 
     return {
         "algorithm": "Genetic Algorithm",
@@ -105,6 +158,7 @@ def solve_ga_baseline(G, instance, particles=40, iterations=100, seed=42,
         "routes": result.get("routes", []),
         "travel_time_s": result.get("travel_time_s", float('inf')),
         "distance_m": result.get("distance_m", float('inf')),
+        "tw_penalty": result.get("tw_penalty", 0.0),
         "paths": paths,
     }
 

@@ -35,6 +35,7 @@ class OptimizationRequest(BaseModel):
     iterations: int = 100
     traffic_mode: str = "simulated"  # "simulated" | "live"
     traffic_seed: int = 42
+    sla_strictness_hours: float = 4.0 # NEW: Dynamic SLA Slider
 
 def prepare_osm_graph(place_name: str):
     """Downloads, projects to WGS84, extracts strongly connected subgraph, and patches edge attributes."""
@@ -81,13 +82,11 @@ def run_optimization(req: OptimizationRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load map network: {str(e)}")
 
-    # Apply live or simulated traffic variations
-    G = apply_traffic_scenario(G_base, seed=req.traffic_seed, mode=req.traffic_mode)
-    for u, v, k, data in G.edges(keys=True, data=True):
-        if 'distance_m' not in data:
-            data['distance_m'] = float(data.get('length', 10.0))
-        if 'travel_time_s' not in data:
-            data['travel_time_s'] = data['distance_m'] / 8.33
+    # Bridge frontend terminology to backend telemetry models
+    historical_mode = 'rush_hour' if req.traffic_mode == 'live' else 'off_peak'
+    
+    # Applies exact traversal speeds via cKDTree spatial joining
+    G = apply_traffic_scenario(G_base, mode=historical_mode)
 
     # Dynamically select nodes directly from the graph
     try:
@@ -98,19 +97,48 @@ def run_optimization(req: OptimizationRequest):
     rng = np.random.default_rng(req.traffic_seed)
     demands = rng.integers(1, 8, size=len(customer_nodes))
     
+    # 1. ENTERPRISE GUARDRAIL: Check if the problem is physically possible
+    total_demand = sum(demands)
+    total_fleet_capacity = int(req.num_vehicles) * float(req.vehicle_capacity)
+    
+    if total_demand > total_fleet_capacity:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Infeasible Physics: Total customer demand is {total_demand} items, but your fleet can only carry {total_fleet_capacity}. Increase Fleet Size or Capacity."
+        )
+
+    # Convert UI slider (hours) directly into seconds
+    strictness_seconds = req.sla_strictness_hours * 3600.0
+    start_of_day = 32400.0 
+    
     customer_objs = []
     node_to_id = {depot_node: "Depot"}
     frontend_customers = []
     
     for i, (node, demand) in enumerate(zip(customer_nodes, demands)):
-        customer_objs.append(Customer(node=node, demand=float(demand)))
+        window_duration = strictness_seconds
+        offset = rng.uniform(0, 7200)
+        
+        c_ready_time = start_of_day + offset
+        c_due_time = c_ready_time + window_duration
+        
+        customer_objs.append(Customer(
+            node=node, 
+            demand=float(demand),
+            ready_time=c_ready_time,
+            due_time=c_due_time,
+            service_time=300.0
+        ))
+        
         c_id = f"C{i+1}"
         node_to_id[node] = c_id
         frontend_customers.append({
             "id": c_id,
             "lat": G.nodes[node]['y'],
             "lng": G.nodes[node]['x'],
-            "demand": float(demand)
+            "demand": float(demand),
+            "ready_time": c_ready_time,
+            "due_time": c_due_time
         })
 
     frontend_depot = {
@@ -161,6 +189,9 @@ def run_optimization(req: OptimizationRequest):
     routes_geojson = {"type": "FeatureCollection", "features": []}
     palette = ["#D90429", "#0077B6", "#2A9D8F", "#F4A261", "#7209B7", "#FFB703"]
     schedule_data = []
+    
+    # Map nodes to customer objects for quick lookup
+    cust_dict = {c.node: c for c in customer_objs}
 
     for v_idx, route in enumerate(primary_solution["routes"]):
         if len(route) <= 2 and route[0] == route[-1]:
@@ -168,24 +199,41 @@ def run_optimization(req: OptimizationRequest):
             
         coords = []
         stops_labels = [node_to_id.get(n, str(n)) for n in route]
-        current_time = 0.0
+        current_time = 32400.0  # 9:00 AM
         stops_timeline = []
 
         for a, b in zip(route[:-1], route[1:]):
-            path = primary_solution["paths"].get((a, b), [])
+            path = primary_solution["paths"].get((a, b)) or primary_solution["paths"].get((b, a), [])
+            if not path:
+                path = [a, b] 
+                
             seg_time = 0.0
             for u, v in zip(path[:-1], path[1:]):
                 edge_data = G.get_edge_data(u, v)
+                if edge_data is None:
+                    continue
                 attrs = min(edge_data.values(), key=lambda x: x.get("travel_time_s", float('inf'))) if G.is_multigraph() else edge_data
                 seg_time += attrs.get("travel_time_s", 0)
 
             current_time += seg_time
+            
+            # FIX 2: Engine Synchronization (Idling)
+            # If the truck arrives early, it MUST wait until the customer is ready
+            if b in cust_dict:
+                if current_time < cust_dict[b].ready_time:
+                    current_time = cust_dict[b].ready_time
+
             stops_timeline.append({
                 "stopId": node_to_id.get(b, str(b)),
                 "arrivalTime_s": round(current_time, 1),
                 "isDepot": b == instance.depot
             })
-            current_time += 600.0  # 10 minute unloading service window
+            
+            # Add unloading service time
+            if b in cust_dict:
+                current_time += cust_dict[b].service_time
+            else:
+                current_time += 300.0  # Depot service time
 
             for n in path:
                 coords.append([G.nodes[n]['x'], G.nodes[n]['y']])

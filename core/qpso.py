@@ -20,8 +20,8 @@ class QPSO:
         history = [gbest_score]
         
         for it in range(self.iterations):
-            # Adaptive contraction-expansion coefficient (smoothly transitions exploration to exploitation)
-            alpha = 1.0 - 0.6 * (it / self.iterations)
+            # NON-LINEAR DECAY: Smoothly curves exploration to exploitation, dodging premature local optima
+            alpha = 1.0 - 0.5 * (it / self.iterations) ** 2
             
             # Compute Mean Best Position (mbest) of the swarm
             mbest = np.mean(pbest, axis=0)
