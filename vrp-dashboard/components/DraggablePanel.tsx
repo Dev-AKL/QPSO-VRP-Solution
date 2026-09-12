@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { GripVertical } from "lucide-react";
 import { cn } from "cn";
 
@@ -28,7 +28,62 @@ export default function DraggablePanel({
 }: DraggablePanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<DragState | null>(null);
+  const parentLeftRef = useRef<number | null>(null);
   const [position, setPosition] = useState(initialPosition);
+
+  const constrainPosition = (candidate: { x: number; y: number }) => {
+    const panel = panelRef.current;
+    const offsetParent = panel?.offsetParent as HTMLElement | null;
+    if (!panel || !offsetParent) return candidate;
+
+    const maxX = Math.max(8, offsetParent.clientWidth - panel.offsetWidth - 8);
+    const maxY = Math.max(8, offsetParent.clientHeight - panel.offsetHeight - 8);
+    return {
+      x: Math.max(8, Math.min(maxX, candidate.x)),
+      y: Math.max(8, Math.min(maxY, candidate.y)),
+    };
+  };
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    const offsetParent = panel?.offsetParent as HTMLElement | null;
+    if (!panel || !offsetParent) return;
+
+    const keepPanelVisible = () => {
+      const parentLeft = offsetParent.getBoundingClientRect().left;
+      const previousParentLeft = parentLeftRef.current;
+      parentLeftRef.current = parentLeft;
+
+      // Panel coordinates are relative to the map container. When the
+      // sidebar collapses, that container moves left; compensate by moving
+      // the panel's local x position right so its screen position stays put.
+      // When the sidebar expands, leave x unchanged so the panel naturally
+      // follows the map to the right.
+      const leftwardContainerShift = previousParentLeft !== null && parentLeft < previousParentLeft
+        ? previousParentLeft - parentLeft
+        : 0;
+
+      setPosition((current) => {
+        const anchored = leftwardContainerShift > 0
+          ? { ...current, x: current.x + leftwardContainerShift }
+          : current;
+        const constrained = constrainPosition(anchored);
+        if (constrained.x === current.x && constrained.y === current.y) return current;
+        return constrained;
+      });
+    };
+
+    const resizeObserver = new ResizeObserver(keepPanelVisible);
+    resizeObserver.observe(offsetParent);
+    resizeObserver.observe(panel);
+    window.addEventListener("resize", keepPanelVisible);
+    keepPanelVisible();
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", keepPanelVisible);
+    };
+  }, []);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !panelRef.current) return;
@@ -52,13 +107,10 @@ export default function DraggablePanel({
     const panel = panelRef.current;
     if (!drag || !panel || drag.pointerId !== event.pointerId) return;
 
-    const offsetParent = panel.offsetParent as HTMLElement | null;
-    const maxX = Math.max(0, (offsetParent?.clientWidth ?? window.innerWidth) - panel.offsetWidth - 8);
-    const maxY = Math.max(0, (offsetParent?.clientHeight ?? window.innerHeight) - panel.offsetHeight - 8);
-    setPosition({
-      x: Math.max(8, Math.min(maxX, drag.originX + event.clientX - drag.startX)),
-      y: Math.max(8, Math.min(maxY, drag.originY + event.clientY - drag.startY)),
-    });
+    setPosition(constrainPosition({
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY,
+    }));
   };
 
   const stopDragging = (event: ReactPointerEvent<HTMLDivElement>) => {

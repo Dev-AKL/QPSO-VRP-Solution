@@ -346,14 +346,42 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
   }, [normalizedRoutes.features.length, updateProgress]);
 
   const focusOnRoutes = useCallback(() => {
-    const coordinates = normalizedRoutes.features.flatMap((feature) => feature.geometry.coordinates) as Coordinate[];
-    if (!mapRef.current || coordinates.length === 0) return;
+    const map = mapRef.current;
+    if (!map || !mapLoaded) return;
+
+    const routeCoordinates = normalizedRoutes.features
+      .filter((feature) => vehicleFilter === "all" || Number(feature.properties?.vehicle ?? 0) === vehicleFilter)
+      .flatMap((feature) => feature.geometry.coordinates) as Coordinate[];
+    const stopCoordinates = routeNodes.features
+      .filter((feature) => vehicleFilter === "all" || Number(feature.properties?.vehicle ?? 0) === vehicleFilter)
+      .map((feature) => feature.geometry.coordinates as Coordinate);
+    const coordinates = [...routeCoordinates, ...stopCoordinates];
+    if (coordinates.length === 0) return;
+
     const bounds = coordinates.reduce(
       (current, coordinate) => current.extend(coordinate),
       new maplibregl.LngLatBounds(coordinates[0], coordinates[0]),
     );
-    mapRef.current.fitBounds(bounds, { padding: 96, duration: 700, maxZoom: 15 });
-  }, [normalizedRoutes]);
+
+    map.stop();
+    map.resize();
+
+    // Do not let the city viewport constraint cancel a fit operation when a
+    // route reaches the edge of the selected service area.
+    map.setMaxBounds(null);
+    const longitudeSpan = bounds.getEast() - bounds.getWest();
+    const latitudeSpan = bounds.getNorth() - bounds.getSouth();
+    if (longitudeSpan < 1e-7 && latitudeSpan < 1e-7) {
+      map.flyTo({ center: bounds.getCenter(), zoom: 15, duration: 700 });
+    } else {
+      map.fitBounds(bounds, {
+        padding: { top: 120, right: 120, bottom: 120, left: 120 },
+        duration: 700,
+        maxZoom: 14,
+      });
+    }
+    map.once("moveend", () => map.setMaxBounds(CITY_PRESETS[activeCity].bounds));
+  }, [activeCity, mapLoaded, normalizedRoutes, routeNodes, vehicleFilter]);
 
   const projectedRouteData = useMemo(() => {
     const map = mapInstance;
@@ -710,7 +738,7 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
         <DraggablePanel
           label="Route playback"
           initialPosition={isCompactViewport ? { x: 8, y: 180 } : { x: 250, y: 24 }}
-          className="pointer-events-auto flex w-[min(28rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] flex-col gap-3 rounded-xl border border-border/80 bg-card/90 p-3 shadow-2xl shadow-black/30 backdrop-blur-xl"
+          className="pointer-events-auto flex w-[min(28rem,calc(100vw-1rem))] min-w-[min(14rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] resize flex-col gap-3 overflow-auto rounded-xl border border-border/80 bg-card/90 p-3 shadow-2xl shadow-black/30 backdrop-blur-xl"
         >
           <div className="flex items-center gap-2">
             <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">

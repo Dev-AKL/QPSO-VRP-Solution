@@ -13,7 +13,8 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { 
-  Truck, Play, RefreshCw, AlertCircle, Layers, CalendarDays, Table as TableIcon
+  Truck, Play, RefreshCw, AlertCircle, Layers, CalendarDays, Table as TableIcon,
+  PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import TimelineGantt from "@/components/TimelineGantt";
 import DraggablePanel from "@/components/DraggablePanel";
@@ -67,6 +68,8 @@ export default function VRPDashboard() {
   // Sidebar Resize State
   const [sidebarWidth, setSidebarWidth] = useState(480);
   const [isResizing, setIsResizing] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isCompactViewport, setIsCompactViewport] = useState(false);
 
   const [activeCity, setActiveCity] = useState<"salt-lake" | "manhattan">("salt-lake");
   const [customersN, setCustomersN] = useState<number[]>([10]);
@@ -106,6 +109,13 @@ export default function VRPDashboard() {
       window.removeEventListener("mouseup", stopResizing);
     };
   }, [isResizing, resize, stopResizing]);
+
+  useEffect(() => {
+    const updateViewportMode = () => setIsCompactViewport(window.innerWidth <= 720);
+    updateViewportMode();
+    window.addEventListener("resize", updateViewportMode);
+    return () => window.removeEventListener("resize", updateViewportMode);
+  }, []);
 
   const safeSetArray = (
     val: number | readonly number[],
@@ -168,12 +178,13 @@ export default function VRPDashboard() {
     : null;
 
   return (
-    <div className="dashboard-shell flex h-dvh min-h-0 w-full max-w-full overflow-hidden bg-background text-foreground font-sans">
+    <div className={`dashboard-shell flex h-dvh min-h-0 w-full max-w-full overflow-hidden bg-background text-foreground font-sans ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       
       {/* Resizable Sidebar */}
-      <aside 
-        style={{ width: `${sidebarWidth}px` }}
-        className="relative z-10 flex h-full min-h-0 min-w-0 shrink-0 flex-col border-r border-border bg-card/60 backdrop-blur-md"
+      <aside
+        aria-hidden={isSidebarCollapsed}
+        style={{ width: isSidebarCollapsed ? 0 : `${sidebarWidth}px` }}
+        className={`relative z-10 flex h-full min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-border bg-card/60 backdrop-blur-md transition-[width] duration-200 ${isSidebarCollapsed ? "border-r-0" : "border-r"}`}
       >
         <header className="px-6 py-5 border-b border-border bg-background/50">
           <div className="flex items-center justify-between">
@@ -186,7 +197,19 @@ export default function VRPDashboard() {
                 <p className="text-sm text-muted-foreground leading-none mt-1">Enterprise Route Optimizer</p>
               </div>
             </div>
-            <Badge variant="outline" className="font-mono text-[10px]">v2.0.1</Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="font-mono text-[10px]">v2.0.1</Badge>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => setIsSidebarCollapsed(true)}
+                aria-label="Collapse sidebar"
+                title="Collapse sidebar"
+              >
+                <PanelLeftClose className="size-4" />
+              </Button>
+            </div>
           </div>
         </header>
 
@@ -383,20 +406,33 @@ export default function VRPDashboard() {
         </div>
 
         {/* Dynamic Edge Resizer Handle */}
-        <div 
-          className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize bg-transparent hover:bg-primary/50 transition-colors z-50"
+        <div
+          className="absolute top-0 right-0 z-50 h-full w-2 cursor-col-resize bg-transparent transition-colors hover:bg-primary/50"
           onMouseDown={startResizing}
         />
       </aside>
 
       <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        {isSidebarCollapsed && (
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="secondary"
+            className="absolute left-4 top-4 z-30 shadow-lg"
+            onClick={() => setIsSidebarCollapsed(false)}
+            aria-label="Expand sidebar"
+            title="Expand sidebar"
+          >
+            <PanelLeftOpen className="size-4" />
+          </Button>
+        )}
         
         {results && (
           <div className="pointer-events-none absolute inset-0 z-20">
             <DraggablePanel
               label="Impact summary"
               initialPosition={{ x: 16, y: 24 }}
-              className="pointer-events-auto w-[220px] rounded-xl border border-border/80 bg-card/90 shadow-2xl shadow-black/30 backdrop-blur-xl"
+              className="pointer-events-auto min-h-[180px] w-[220px] min-w-[180px] max-h-[80vh] max-w-[min(90vw,420px)] resize overflow-auto rounded-xl border border-border/80 bg-card/90 shadow-2xl shadow-black/30 backdrop-blur-xl"
             >
               <div className="grid divide-y divide-border/70 px-3">
                 <div className="py-3">
@@ -423,13 +459,17 @@ export default function VRPDashboard() {
         )}
 
         <Tabs defaultValue="spatial" className="relative flex h-full min-h-0 min-w-0 flex-col">
-          <div className="absolute top-4 right-4 z-20">
-            <TabsList className="max-w-[calc(100vw-2rem)] overflow-x-auto bg-card/90 shadow-xl backdrop-blur-md">
+          <DraggablePanel
+            label="Workspace views"
+            initialPosition={isCompactViewport ? { x: 8, y: 120 } : { x: 320, y: 16 }}
+            className="pointer-events-auto max-w-[calc(100vw-1rem)] rounded-lg border border-border/80 bg-card/90 shadow-xl backdrop-blur-md"
+          >
+            <TabsList className="max-w-[calc(100vw-1rem)] overflow-x-auto bg-transparent shadow-none">
               <TabsTrigger value="spatial" className="text-xs font-medium gap-1.5"><Layers className="h-3.5 w-3.5" /> Spatial GIS</TabsTrigger>
               <TabsTrigger value="temporal" className="text-xs font-medium gap-1.5"><CalendarDays className="h-3.5 w-3.5" /> Gantt Schedule</TabsTrigger>
               <TabsTrigger value="benchmarks" className="text-xs font-medium gap-1.5"><TableIcon className="h-3.5 w-3.5" /> Benchmarks</TabsTrigger>
             </TabsList>
-          </div>
+          </DraggablePanel>
 
           <TabsContent value="spatial" className="relative m-0 h-full min-h-0 min-w-0 w-full flex-1">
             <div className="absolute inset-0">
