@@ -8,16 +8,18 @@ def random_key_order(position, customers):
     return [customers[i] for i in idx]
 
 
-def run_random_search(evaluate, dimension, iterations=1000, seed=42):
+def run_random_search(evaluate, dimension, iterations=1000, seed=42, initial_x=None):
+    if dimension < 1 or iterations < 1:
+        raise ValueError("Random search requires positive dimension and iterations.")
     rng = np.random.default_rng(seed)
     best_x = None
     best_score = math.inf
     history = []
 
     for _ in range(iterations):
-        x = rng.random(dimension)
+        x = initial_x.copy() if initial_x is not None and best_x is None else rng.random(dimension)
         score, _ = evaluate(x)
-        if score < best_score:
+        if best_x is None or score < best_score:
             best_score = score
             best_x = x.copy()
         history.append(best_score)

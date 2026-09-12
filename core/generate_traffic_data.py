@@ -1,3 +1,5 @@
+import os
+
 import osmnx as ox
 import pandas as pd
 import numpy as np
@@ -70,6 +72,7 @@ def generate_bpr_traffic_model(place_name="Salt Lake, Kolkata, India", output_fi
         edge_records.append({
             'u': u,
             'v': v,
+            'key': key,
             'length_m': round(length_m, 2),
             'free_flow_kph': round(free_flow_kph, 1),
             'speed_offpeak_kph': round(speed_offpeak_kph, 2),
@@ -79,6 +82,8 @@ def generate_bpr_traffic_model(place_name="Salt Lake, Kolkata, India", output_fi
         })
         
     df = pd.DataFrame(edge_records)
+    if not os.path.isabs(output_file):
+        output_file = os.path.join(os.path.dirname(__file__), output_file)
     df.to_csv(output_file, index=False)
     print(f"Statistically accurate dataset saved to {output_file}. Edges processed: {len(df)}")
 

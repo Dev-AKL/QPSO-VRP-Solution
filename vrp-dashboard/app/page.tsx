@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,10 +13,50 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { 
-  Truck, Play, RefreshCw, Cpu, AlertCircle, Fuel, Leaf, 
-  IndianRupee, TrendingDown, Layers, CalendarDays, Table as TableIcon, MapPin 
+  Truck, Play, RefreshCw, AlertCircle, Layers, CalendarDays, Table as TableIcon
 } from "lucide-react";
 import TimelineGantt from "@/components/TimelineGantt";
+import DraggablePanel from "@/components/DraggablePanel";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+type AlgorithmKey = "QPSO" | "GA" | "A*";
+type RouteCollection = GeoJSON.FeatureCollection<GeoJSON.LineString, Record<string, unknown>>;
+
+interface AlgorithmSummary {
+  score: number;
+  distance_km: number;
+  travel_time_min: number;
+  total_duration_min: number;
+  tw_penalty: number;
+  total_lateness_s: number;
+  history: number[];
+}
+
+interface ScheduleData {
+  vehicle: number;
+  color: string;
+  stops: string[];
+  totalTime_min: number;
+  timeline: Array<{ stopId: string; arrivalTime_s: number; isDepot: boolean }>;
+}
+
+interface DashboardResults {
+  business_impact: {
+    rupees_saved: number;
+    liters_saved: number;
+    distance_saved_km: number;
+    co2_saved_kg: number;
+  };
+  algorithms: Record<AlgorithmKey, AlgorithmSummary>;
+  routes?: RouteCollection;
+  routes_by_algorithm?: Partial<Record<AlgorithmKey, RouteCollection>>;
+  schedules?: ScheduleData[];
+  schedules_by_algorithm?: Partial<Record<AlgorithmKey, ScheduleData[]>>;
+  locations: {
+    depot: { id: string; lat: number; lng: number };
+    customers: Array<{ id: string; lat: number; lng: number; demand: number; ready_time?: number; due_time?: number }>;
+  };
+}
 
 const MapViewport = dynamic(
   () => import("@/components/MapViewport").then((mod) => mod.default),
@@ -28,7 +68,7 @@ export default function VRPDashboard() {
   const [sidebarWidth, setSidebarWidth] = useState(480);
   const [isResizing, setIsResizing] = useState(false);
 
-  const [placeName, setPlaceName] = useState("Salt Lake, Kolkata, India");
+  const [activeCity, setActiveCity] = useState<"salt-lake" | "manhattan">("salt-lake");
   const [customersN, setCustomersN] = useState<number[]>([10]);
   const [vehicles, setVehicles] = useState<number[]>([4]);
   const [capacity, setCapacity] = useState<number[]>([25]);
@@ -39,10 +79,11 @@ export default function VRPDashboard() {
   const [distanceWeight, setDistanceWeight] = useState<number[]>([0.2]);
   const [particles, setParticles] = useState<number[]>([40]);
   const [iterations, setIterations] = useState<number[]>([100]);
-  const [inspectAlgo, setInspectAlgo] = useState("QPSO");
+  const [slaStrictness, setSlaStrictness] = useState<number[]>([4]); // NEW
+  const [inspectAlgo, setInspectAlgo] = useState<AlgorithmKey>("QPSO");
 
   const [isSolving, setIsSolving] = useState(false);
-  const [results, setResults] = useState<any>(null);
+  const [results, setResults] = useState<DashboardResults | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Resize Handlers
@@ -66,19 +107,22 @@ export default function VRPDashboard() {
     };
   }, [isResizing, resize, stopResizing]);
 
-  const safeSetArray = (val: number | number[], setter: (v: number[]) => void) => {
-    setter(Array.isArray(val) ? val : [val]);
+  const safeSetArray = (
+    val: number | readonly number[],
+    setter: (v: number[]) => void,
+  ) => {
+    setter(Array.isArray(val) ? [...val] : [val]);
   };
 
   const runSolver = async () => {
     setIsSolving(true);
     setError(null);
     try {
-      const response = await fetch("http://localhost:8000/api/optimize", {
+      const response = await fetch(`${API_BASE_URL}/api/optimize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          place_name: placeName,
+          place_name: activeCity === "salt-lake" ? "Salt Lake, Kolkata, India" : "Manhattan, New York, USA",
           customers_n: customersN[0] ?? 10,
           num_vehicles: vehicles[0] ?? 4,
           vehicle_capacity: capacity[0] ?? 25,
@@ -87,39 +131,49 @@ export default function VRPDashboard() {
           iterations: iterations[0] ?? 100,
           traffic_mode: trafficMode,
           traffic_seed: trafficSeed,
+          sla_strictness_hours: slaStrictness[0] ?? 4, // NEW
         }),
       });
 
-      if (!response.ok) throw new Error(`Optimization failed: HTTP ${response.status}`);
+      // NEW: Accurately parse the FastAPI guardrail message
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Optimization failed: HTTP ${response.status}`);
+      }
       const data = await response.json();
       setResults(data);
-    } catch (err: any) {
-      setError(err.message || "Failed to reach FastAPI optimization engine.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to reach FastAPI optimization engine.");
     } finally {
       setIsSolving(false);
     }
   };
 
-  const chartData = results?.algorithms?.QPSO?.history?.map((qpsoCost: number, idx: number) => ({
-    iteration: idx + 1,
-    QPSO: Number(qpsoCost.toFixed(1)),
-    GA: Number(results.algorithms.GA.history[idx]?.toFixed(1) || null),
-    "A* Baseline": Number(results.algorithms["A*"].score.toFixed(1)),
-  }));
+  const chartData = results?.algorithms?.QPSO?.history
+    ? Array.from({
+        length: Math.max(
+          results.algorithms.QPSO.history.length,
+          results.algorithms.GA.history.length,
+        ),
+      }, (_, idx) => ({
+        iteration: idx + 1,
+        QPSO: results.algorithms.QPSO.history[idx] == null
+          ? null
+          : Number(results.algorithms.QPSO.history[idx].toFixed(1)),
+        GA: results.algorithms.GA.history[idx] == null
+          ? null
+          : Number(results.algorithms.GA.history[idx].toFixed(1)),
+        "A* Baseline": Number(results.algorithms["A*"].score.toFixed(1)),
+      }))
+    : null;
 
   return (
-    <div className="flex h-screen w-screen bg-background text-foreground overflow-hidden font-sans select-none">
-      <style dangerouslySetInnerHTML={{__html: `
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #52525b; }
-      `}} />
+    <div className="dashboard-shell flex h-dvh min-h-0 w-full max-w-full overflow-hidden bg-background text-foreground font-sans">
       
       {/* Resizable Sidebar */}
       <aside 
         style={{ width: `${sidebarWidth}px` }}
-        className="relative h-full flex flex-col border-r border-border bg-card/30 backdrop-blur-md z-10 shrink-0"
+        className="relative z-10 flex h-full min-h-0 min-w-0 shrink-0 flex-col border-r border-border bg-card/60 backdrop-blur-md"
       >
         <header className="px-6 py-5 border-b border-border bg-background/50">
           <div className="flex items-center justify-between">
@@ -137,26 +191,45 @@ export default function VRPDashboard() {
         </header>
 
         {/* Native overflow-y-auto to fix ScrollArea clipping */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden p-6 custom-scrollbar">
+        <div className="sidebar-scroll min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-6">
           <div className="space-y-8 pb-12">
             
             <section className="space-y-4">
               <h2 className="scroll-m-20 border-b border-border/50 pb-2 text-sm font-semibold tracking-tight uppercase text-muted-foreground">
                 1. Environment
               </h2>
-              <div className="space-y-2">
-                <Label htmlFor="location" className="text-xs font-medium leading-none">OSM Location</Label>
-                <div className="relative">
-                  <MapPin className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input 
-                    id="location" 
-                    value={placeName} 
-                    onChange={(e) => setPlaceName(e.target.value)} 
-                    className="pl-9 h-9 text-sm font-medium"
-                  />
-                </div>
-              </div>
+              <div className="space-y-3">
+  <Label className="text-xs font-medium leading-none">Operating Region</Label>
+  <div className="grid grid-cols-2 gap-2">
+    <Button 
+      variant={activeCity === "salt-lake" ? "default" : "outline"} 
+      onClick={() => setActiveCity("salt-lake")}
+      className="text-xs h-9 font-medium shadow-sm"
+    >
+      Salt Lake Sector V
+    </Button>
+    <Button 
+      variant={activeCity === "manhattan" ? "default" : "outline"} 
+      onClick={() => setActiveCity("manhattan")}
+      className="text-xs h-9 font-medium shadow-sm"
+    >
+      Manhattan, NY
+    </Button>
+  </div>
+</div>
 
+              <div className="space-y-3 pt-2">
+                <div className="flex justify-between items-center">
+                  <Label className="text-xs font-medium leading-none">SLA Strictness</Label>
+                  <span className="text-sm font-bold font-mono text-primary">{slaStrictness[0] ?? 4} hrs</span>
+                </div>
+                <Slider 
+                  value={slaStrictness} 
+                  onValueChange={(v) => safeSetArray(v, setSlaStrictness)} 
+                  min={1} max={8} step={0.5} 
+                  className="cursor-grab active:cursor-grabbing"
+                />
+              </div>
               <div className="space-y-3 pt-2">
                 <div className="flex justify-between items-center">
                   <Label className="text-xs font-medium leading-none">Delivery Stops</Label>
@@ -277,7 +350,7 @@ export default function VRPDashboard() {
                 <h2 className="scroll-m-20 border-b border-border/50 pb-2 text-sm font-semibold tracking-tight uppercase text-muted-foreground">
                   4. Inspect Algorithm
                 </h2>
-                <RadioGroup value={inspectAlgo} onValueChange={setInspectAlgo} className="grid grid-cols-3 gap-2">
+                <RadioGroup value={inspectAlgo} onValueChange={(value) => setInspectAlgo(value as AlgorithmKey)} className="grid grid-cols-3 gap-2">
                   {['QPSO', 'GA', 'A*'].map((algo) => (
                     <div key={algo} className={`flex items-center space-x-2 border p-2 rounded-md justify-center transition-colors ${inspectAlgo === algo ? 'border-primary/50 bg-primary/10' : 'border-border/50 bg-background/50'}`}>
                       <RadioGroupItem value={algo} id={algo} className="hidden" />
@@ -316,56 +389,69 @@ export default function VRPDashboard() {
         />
       </aside>
 
-      <main className="flex-1 relative h-full flex flex-col bg-zinc-950">
+      <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
         
         {results && (
-          <div className="absolute top-4 left-4 z-20 flex gap-3">
-            <Card className="p-3.5 border-border/40 bg-background/80 backdrop-blur-md shadow-lg flex items-center gap-4">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-500 mb-0.5">Op Savings</p>
-                <p className="text-xl font-bold font-mono leading-none tracking-tight">₹{results.business_impact.rupees_saved}</p>
+          <div className="pointer-events-none absolute inset-0 z-20">
+            <DraggablePanel
+              label="Impact summary"
+              initialPosition={{ x: 16, y: 24 }}
+              className="pointer-events-auto w-[220px] rounded-xl border border-border/80 bg-card/90 shadow-2xl shadow-black/30 backdrop-blur-xl"
+            >
+              <div className="grid divide-y divide-border/70 px-3">
+                <div className="py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-500">Op savings</p>
+                  <p className="mt-1 text-xl font-bold font-mono leading-none tracking-tight">₹{results.business_impact.rupees_saved}</p>
+                </div>
+                <div className="py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-400">Fuel cut</p>
+                  <p className="mt-1 text-xl font-bold font-mono leading-none tracking-tight">{results.business_impact.liters_saved}<span className="ml-0.5 text-sm font-normal text-muted-foreground">L</span></p>
+                </div>
+                <div className="py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">Path saved</p>
+                  <p className="mt-1 text-xl font-bold font-mono leading-none tracking-tight">{results.business_impact.distance_saved_km}<span className="ml-0.5 text-sm font-normal text-muted-foreground">km</span></p>
+                </div>
+                <div className="py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-purple-400">SLA compliance</p>
+                  <p className="mt-1 text-xl font-bold font-mono leading-none tracking-tight">
+                    {results.algorithms.QPSO.tw_penalty > 0 ? <span className="text-destructive">Failed</span> : <span className="text-emerald-400">100% On-Time</span>}
+                  </p>
+                </div>
               </div>
-              <div className="h-8 w-px bg-border"></div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 mb-0.5">Fuel Cut</p>
-                <p className="text-xl font-bold font-mono leading-none tracking-tight">{results.business_impact.liters_saved}<span className="text-sm font-normal text-muted-foreground ml-0.5">L</span></p>
-              </div>
-              <div className="h-8 w-px bg-border"></div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-primary mb-0.5">Path Saved</p>
-                <p className="text-xl font-bold font-mono leading-none tracking-tight">{results.business_impact.distance_saved_km}<span className="text-sm font-normal text-muted-foreground ml-0.5">km</span></p>
-              </div>
-            </Card>
+            </DraggablePanel>
           </div>
         )}
 
-        <Tabs defaultValue="spatial" className="h-full flex flex-col relative">
+        <Tabs defaultValue="spatial" className="relative flex h-full min-h-0 min-w-0 flex-col">
           <div className="absolute top-4 right-4 z-20">
-            <TabsList className="bg-background/80 backdrop-blur-md border border-border shadow-lg">
+            <TabsList className="max-w-[calc(100vw-2rem)] overflow-x-auto bg-card/90 shadow-xl backdrop-blur-md">
               <TabsTrigger value="spatial" className="text-xs font-medium gap-1.5"><Layers className="h-3.5 w-3.5" /> Spatial GIS</TabsTrigger>
               <TabsTrigger value="temporal" className="text-xs font-medium gap-1.5"><CalendarDays className="h-3.5 w-3.5" /> Gantt Schedule</TabsTrigger>
               <TabsTrigger value="benchmarks" className="text-xs font-medium gap-1.5"><TableIcon className="h-3.5 w-3.5" /> Benchmarks</TabsTrigger>
             </TabsList>
           </div>
 
-          <TabsContent value="spatial" className="m-0 h-full w-full flex-1 relative">
+          <TabsContent value="spatial" className="relative m-0 h-full min-h-0 min-w-0 w-full flex-1">
             <div className="absolute inset-0">
-              <MapViewport 
-                routesGeoJSON={results?.routes} 
-                customers={results?.locations?.customers || []} 
-                depot={results?.locations?.depot || { id: "D", lat: 0, lng: 0 }} 
-                activeLocation={placeName}
+                <MapViewport
+                  routesGeoJSON={results?.routes_by_algorithm?.[inspectAlgo] ?? results?.routes}
+                  customers={results?.locations?.customers || []}
+                  depot={results?.locations?.depot || { id: "D", lat: 0, lng: 0 }}
+                  activeCity={activeCity}
+                />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="temporal" className="m-0 h-full min-h-0 w-full flex-1 overflow-y-auto bg-background p-6 pt-20">
+            <div className="max-w-4xl mx-auto">
+              <TimelineGantt 
+                schedules={results?.schedules_by_algorithm?.[inspectAlgo] ?? (results?.schedules || [])}
+                customers={results?.locations?.customers || []}
               />
             </div>
           </TabsContent>
 
-          <TabsContent value="temporal" className="m-0 h-full w-full flex-1 bg-zinc-950 p-6 overflow-y-auto pt-20">
-            <div className="max-w-4xl mx-auto">
-              <TimelineGantt schedules={results?.schedules || []} />
-            </div>
-          </TabsContent>
-
-          <TabsContent value="benchmarks" className="m-0 h-full w-full flex-1 bg-zinc-950 p-6 overflow-y-auto pt-20">
+          <TabsContent value="benchmarks" className="m-0 h-full min-h-0 w-full flex-1 overflow-y-auto bg-background p-6 pt-20">
             <div className="max-w-4xl mx-auto space-y-6">
               <Card className="border-border/50 bg-card/30">
                 <CardHeader className="pb-3">
@@ -377,9 +463,10 @@ export default function VRPDashboard() {
                       <TableHeader className="bg-muted/50">
                         <TableRow>
                           <TableHead className="font-semibold text-foreground">Methodology</TableHead>
-                          <TableHead className="text-right font-semibold text-foreground">Total Cost</TableHead>
-                          <TableHead className="text-right font-semibold text-foreground">Distance</TableHead>
-                          <TableHead className="text-right font-semibold text-foreground">Travel Time</TableHead>
+                        <TableHead className="text-right font-semibold text-foreground">Total Cost</TableHead>
+                        <TableHead className="text-right font-semibold text-foreground">Distance</TableHead>
+                        <TableHead className="text-right font-semibold text-foreground">Travel Time</TableHead>
+                        <TableHead className="text-right font-semibold text-foreground">SLA Penalty</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -390,23 +477,32 @@ export default function VRPDashboard() {
                               <TableCell className="text-right font-mono text-emerald-400">{results.algorithms.QPSO.score.toFixed(2)}</TableCell>
                               <TableCell className="text-right font-mono">{results.algorithms.QPSO.distance_km.toFixed(2)} km</TableCell>
                               <TableCell className="text-right font-mono">{results.algorithms.QPSO.travel_time_min.toFixed(1)} min</TableCell>
+                              <TableCell className={`text-right font-mono font-bold ${results.algorithms.QPSO.tw_penalty > 0 ? "text-destructive" : "text-emerald-400"}`}>
+                                {results.algorithms.QPSO.tw_penalty > 0 ? "Violated" : "Zero Penalties"}
+                              </TableCell>
                             </TableRow>
                             <TableRow>
                               <TableCell className="font-medium">Genetic Algorithm</TableCell>
                               <TableCell className="text-right font-mono">{results.algorithms.GA.score.toFixed(2)}</TableCell>
                               <TableCell className="text-right font-mono">{results.algorithms.GA.distance_km.toFixed(2)} km</TableCell>
                               <TableCell className="text-right font-mono">{results.algorithms.GA.travel_time_min.toFixed(1)} min</TableCell>
+                              <TableCell className={`text-right font-mono font-bold ${results.algorithms.GA.tw_penalty > 0 ? "text-destructive" : "text-emerald-400"}`}>
+                                {results.algorithms.GA.tw_penalty > 0 ? "Massive Delay (Late)" : "Zero Penalties"}
+                              </TableCell>
                             </TableRow>
                             <TableRow>
                               <TableCell className="font-medium text-muted-foreground">A* Constructive Baseline</TableCell>
                               <TableCell className="text-right font-mono text-muted-foreground">{results.algorithms["A*"].score.toFixed(2)}</TableCell>
                               <TableCell className="text-right font-mono text-muted-foreground">{results.algorithms["A*"].distance_km.toFixed(2)} km</TableCell>
                               <TableCell className="text-right font-mono text-muted-foreground">{results.algorithms["A*"].travel_time_min.toFixed(1)} min</TableCell>
+                              <TableCell className={`text-right font-mono font-bold ${results.algorithms["A*"].tw_penalty > 0 ? "text-destructive" : "text-muted-foreground"}`}>
+                                {results.algorithms["A*"].tw_penalty > 0 ? "Massive Delay (Late)" : "Zero Penalties"}
+                              </TableCell>
                             </TableRow>
                           </>
                         ) : (
                           <TableRow>
-                            <TableCell colSpan={4} className="h-24 text-center text-sm text-muted-foreground">
+                            <TableCell colSpan={5} className="h-24 text-center text-sm text-muted-foreground">
                               Initialize dispatch sequence to generate metrics.
                             </TableCell>
                           </TableRow>

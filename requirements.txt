@@ -5,3 +5,7 @@ osmnx
 matplotlib
 streamlit
 folium
+fastapi
+pydantic
+uvicorn
+scipy

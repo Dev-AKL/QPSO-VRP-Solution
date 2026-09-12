@@ -15,7 +15,7 @@ from core.heuristics import solve_dynamic_heuristic
 def choose_stops(G, n, seed):
     """Selects a connected depot and n customers deterministically."""
     rng = np.random.default_rng(seed)
-    components = nx.weakly_connected_components(G) if G.is_directed() else nx.connected_components(G)
+    components = nx.strongly_connected_components(G) if G.is_directed() else nx.connected_components(G)
     largest = max(components, key=len)
     nodes = np.asarray(list(largest))
     
@@ -35,7 +35,7 @@ def run_experiment_task(task_params):
     
     try:
         # 1. Environment Instantiation
-        G = apply_traffic_scenario(G0, seed=seed)
+        G = apply_traffic_scenario(G0, seed=seed, mode="simulated")
         for u, v, k, data in G.edges(keys=True, data=True):
             if 'distance_m' not in data: data['distance_m'] = float(data.get('length', 10.0))
             if 'travel_time_s' not in data: data['travel_time_s'] = data['distance_m'] / 8.33
@@ -43,7 +43,16 @@ def run_experiment_task(task_params):
         depot, customer_nodes = choose_stops(G, n, seed=seed)
         rng = np.random.default_rng(seed)
         demands = rng.integers(1, 8, size=len(customer_nodes))
-        customers_obj = [Customer(node=node, demand=float(d)) for node, d in zip(customer_nodes, demands)]
+        customers_obj = [
+            Customer(
+                node=node,
+                demand=float(d),
+                ready_time=32400.0 + float(rng.uniform(0, 7200)),
+                due_time=32400.0 + float(rng.uniform(0, 7200)) + 14400.0,
+                service_time=300.0,
+            )
+            for node, d in zip(customer_nodes, demands)
+        ]
         
         instance = VRPInstance(depot=depot, customers=customers_obj, vehicle_capacity=capacity, num_vehicles=vehicles)
 
@@ -126,7 +135,11 @@ def run_benchmarks():
 
     # --- Data Cleaning & Aggregation ---
     df = pd.DataFrame(all_results)
+    if df.empty:
+        raise RuntimeError("No benchmark results were produced; inspect task errors above.")
     valid_df = df[df["Cost Score"] < 900000].copy()
+    if valid_df.empty:
+        raise RuntimeError("All benchmark runs were infeasible or invalid.")
 
     summary_df = valid_df.groupby(["Customers (N)", "Distance Weight", "Capacity", "Algorithm"]).agg(
         Mean_Cost=("Cost Score", "mean"),

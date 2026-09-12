@@ -1,14 +1,16 @@
-import time
+import math
+
 import networkx as nx
 import numpy as np
 import osmnx as ox
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import Literal
 
-from core.graph_model import build_stop_matrix, nearest_node
-from core.vrp import Customer, VRPInstance
+from core.graph_model import add_objective_weights, path_metrics
+from core.stop_selection import choose_spread_stops
+from core.vrp import Customer, VRPInstance, capacity_feasible
 from core.engine import solve_qpso, solve_ga_baseline
 from core.heuristics import solve_dynamic_heuristic
 from core.traffic import apply_traffic_scenario
@@ -17,8 +19,8 @@ app = FastAPI(title="Quantum VRP Dispatch Engine")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://localhost:3000", "http://localhost:8501"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -26,19 +28,19 @@ app.add_middleware(
 GRAPH_CACHE = {}
 
 class OptimizationRequest(BaseModel):
-    place_name: str = "Salt Lake, Kolkata, India"
-    customers_n: int = 10
-    num_vehicles: int = 4
-    vehicle_capacity: float = 25.0
-    distance_weight: float = 0.2
-    particles: int = 40
-    iterations: int = 100
-    traffic_mode: str = "simulated"  # "simulated" | "live"
+    place_name: str = Field("Salt Lake, Kolkata, India", min_length=1)
+    customers_n: int = Field(10, ge=1, le=500)
+    num_vehicles: int = Field(4, ge=1, le=100)
+    vehicle_capacity: float = Field(25.0, gt=0)
+    distance_weight: float = Field(0.2, ge=0)
+    particles: int = Field(40, ge=3, le=1000)
+    iterations: int = Field(100, ge=1, le=5000)
+    traffic_mode: Literal["simulated", "live"] = "simulated"
     traffic_seed: int = 42
-    sla_strictness_hours: float = 4.0 # NEW: Dynamic SLA Slider
+    sla_strictness_hours: float = Field(4.0, gt=0, le=24)
 
 def prepare_osm_graph(place_name: str):
-    """Downloads, projects to WGS84, extracts strongly connected subgraph, and patches edge attributes."""
+    """Download a WGS84 road graph, keep its strongly connected core, and patch edge metrics."""
     if place_name in GRAPH_CACHE:
         return GRAPH_CACHE[place_name]
 
@@ -63,18 +65,6 @@ def prepare_osm_graph(place_name: str):
     GRAPH_CACHE[place_name] = G
     return G
 
-def choose_stops(G, n, seed):
-    """Selects a connected depot and n customers deterministically."""
-    rng = np.random.default_rng(seed)
-    components = nx.strongly_connected_components(G) if G.is_directed() else nx.connected_components(G)
-    nodes = np.asarray(list(max(components, key=len)))
-    
-    if len(nodes) < n + 1:
-        raise ValueError(f"Network requires {n + 1} connected nodes. Graph is too small.")
-    
-    chosen = rng.choice(nodes, size=n + 1, replace=False)
-    return int(chosen[0]), [int(x) for x in chosen[1:]]
-
 @app.post("/api/optimize")
 def run_optimization(req: OptimizationRequest):
     try:
@@ -90,21 +80,28 @@ def run_optimization(req: OptimizationRequest):
 
     # Dynamically select nodes directly from the graph
     try:
-        depot_node, customer_nodes = choose_stops(G, req.customers_n, seed=req.traffic_seed)
+        depot_node, customer_nodes = choose_spread_stops(
+            G, req.customers_n, seed=req.traffic_seed
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     rng = np.random.default_rng(req.traffic_seed)
     demands = rng.integers(1, 8, size=len(customer_nodes))
     
-    # 1. ENTERPRISE GUARDRAIL: Check if the problem is physically possible
+    # Check both aggregate capacity and the actual bin-packing feasibility of
+    # the generated demands. Aggregate capacity alone is insufficient.
     total_demand = sum(demands)
     total_fleet_capacity = int(req.num_vehicles) * float(req.vehicle_capacity)
-    
-    if total_demand > total_fleet_capacity:
+
+    if not capacity_feasible(demands, req.vehicle_capacity, req.num_vehicles):
         raise HTTPException(
-            status_code=400, 
-            detail=f"Infeasible Physics: Total customer demand is {total_demand} items, but your fleet can only carry {total_fleet_capacity}. Increase Fleet Size or Capacity."
+            status_code=400,
+            detail=(
+                f"Infeasible fleet: demand is {total_demand} items and total capacity is "
+                f"{total_fleet_capacity}, but the individual demands cannot be packed "
+                "into the requested vehicles. Increase fleet size or capacity."
+            ),
         )
 
     # Convert UI slider (hours) directly into seconds
@@ -174,89 +171,145 @@ def run_optimization(req: OptimizationRequest):
         seed=req.traffic_seed, distance_weight=req.distance_weight
     )
 
-    # 2. Compute Indian Logistics Business ROI Impact
+    def first_nonfinite(value, path="result"):
+        if isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+            return path
+        if isinstance(value, dict):
+            for key, child in value.items():
+                found = first_nonfinite(child, f"{path}.{key}")
+                if found:
+                    return found
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                found = first_nonfinite(child, f"{path}[{index}]")
+                if found:
+                    return found
+        return None
+
+    for algorithm, solution in results.items():
+        nonfinite_path = first_nonfinite(solution, algorithm)
+        if nonfinite_path:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{algorithm} could not produce a finite route for this instance "
+                    f"({nonfinite_path}). Increase fleet capacity, check graph connectivity, "
+                    "or increase the optimizer budget."
+                ),
+            )
+
+    # Every algorithm is evaluated on the same customer set.  Reject a
+    # malformed/partial solver result instead of allowing the dashboard to
+    # silently show a different number of stops for GA or A*.
+    expected_customer_nodes = {customer.node for customer in customer_objs}
+    for algorithm, solution in results.items():
+        served_nodes = [
+            node
+            for route in solution.get("routes", [])
+            for node in route
+            if node != depot_node
+        ]
+        served_set = set(served_nodes)
+        if served_set != expected_customer_nodes or len(served_nodes) != len(expected_customer_nodes):
+            missing = expected_customer_nodes - served_set
+            duplicate_count = len(served_nodes) - len(served_set)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{algorithm} returned an incomplete customer set: "
+                    f"expected {len(expected_customer_nodes)} stops, got "
+                    f"{len(served_nodes)} ({len(missing)} missing, "
+                    f"{duplicate_count} duplicates). Check the solver's route decoder."
+                ),
+            )
+
+    # 2. Compute logistics impact. Keep negative savings visible when QPSO is
+    # worse than the baseline instead of masking the regression with max(0, x).
     qpso_dist_km = results['QPSO'].get('distance_m', 0) / 1000.0
     astar_dist_km = results['A*'].get('distance_m', 0) / 1000.0
-    dist_saved_km = max(0.0, astar_dist_km - qpso_dist_km)
+    dist_saved_km = astar_dist_km - qpso_dist_km
     
     # Logistics constant standards: 8 km/L fuel efficiency, ₹100/L diesel, 2.68 kg CO2/L
     liters_saved = dist_saved_km / 8.0
     rupees_saved = liters_saved * 100.0
     co2_saved_kg = liters_saved * 2.68
 
-    # 3. GeoJSON Construction (Defaulting to QPSO optimal routes)
-    primary_solution = results['QPSO']
-    routes_geojson = {"type": "FeatureCollection", "features": []}
+    # 3. Serialize every solution so the dashboard can inspect the selected
+    # algorithm without silently continuing to display QPSO routes.
     palette = ["#D90429", "#0077B6", "#2A9D8F", "#F4A261", "#7209B7", "#FFB703"]
-    schedule_data = []
-    
-    # Map nodes to customer objects for quick lookup
     cust_dict = {c.node: c for c in customer_objs}
 
-    for v_idx, route in enumerate(primary_solution["routes"]):
-        if len(route) <= 2 and route[0] == route[-1]:
-            continue
-            
-        coords = []
-        stops_labels = [node_to_id.get(n, str(n)) for n in route]
-        current_time = 32400.0  # 9:00 AM
-        stops_timeline = []
+    display_graph = add_objective_weights(
+        G, time_weight=1.0, distance_weight=req.distance_weight
+    )
 
-        for a, b in zip(route[:-1], route[1:]):
-            path = primary_solution["paths"].get((a, b)) or primary_solution["paths"].get((b, a), [])
-            if not path:
-                path = [a, b] 
-                
-            seg_time = 0.0
-            for u, v in zip(path[:-1], path[1:]):
-                edge_data = G.get_edge_data(u, v)
-                if edge_data is None:
-                    continue
-                attrs = min(edge_data.values(), key=lambda x: x.get("travel_time_s", float('inf'))) if G.is_multigraph() else edge_data
-                seg_time += attrs.get("travel_time_s", 0)
+    def serialize_solution(solution):
+        routes_geojson = {"type": "FeatureCollection", "features": []}
+        schedule_data = []
+        for v_idx, route in enumerate(solution.get("routes", [])):
+            color = palette[v_idx % len(palette)]
+            coords = []
+            stops_labels = [node_to_id.get(n, str(n)) for n in route]
+            current_time = 32400.0
+            route_start = current_time
+            stops_timeline = []
 
-            current_time += seg_time
-            
-            # FIX 2: Engine Synchronization (Idling)
-            # If the truck arrives early, it MUST wait until the customer is ready
-            if b in cust_dict:
-                if current_time < cust_dict[b].ready_time:
-                    current_time = cust_dict[b].ready_time
+            for a, b in zip(route[:-1], route[1:]):
+                if a == b:
+                    path = [a]
+                    segment_time = 0.0
+                else:
+                    path = solution.get("paths", {}).get((a, b))
+                    if not path:
+                        path = [a, b]
+                    segment_time, _ = path_metrics(
+                        display_graph, path, weight="_routing_weight"
+                    )
+                if not math.isfinite(segment_time):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"{solution.get('algorithm', 'A route')} contains an unreachable leg {a}->{b}.",
+                    )
+                current_time += segment_time
 
-            stops_timeline.append({
-                "stopId": node_to_id.get(b, str(b)),
-                "arrivalTime_s": round(current_time, 1),
-                "isDepot": b == instance.depot
+                if b in cust_dict:
+                    current_time = max(current_time, cust_dict[b].ready_time)
+                stops_timeline.append({
+                    "stopId": node_to_id.get(b, str(b)),
+                    "arrivalTime_s": round(current_time, 1),
+                    "isDepot": b == instance.depot,
+                })
+
+                if b in cust_dict:
+                    current_time += cust_dict[b].service_time
+
+                for node in path:
+                    if node in G.nodes:
+                        coords.append([G.nodes[node]["x"], G.nodes[node]["y"]])
+
+            if len(coords) > 1:
+                routes_geojson["features"].append({
+                    "type": "Feature",
+                    "properties": {
+                        "vehicle": v_idx + 1,
+                        "color": color,
+                        "stops": stops_labels,
+                    },
+                    "geometry": {"type": "LineString", "coordinates": coords},
+                })
+            schedule_data.append({
+                "vehicle": v_idx + 1,
+                "color": color,
+                "stops": stops_labels,
+                "timeline": stops_timeline,
+                "totalTime_min": round((current_time - route_start) / 60.0, 1),
             })
-            
-            # Add unloading service time
-            if b in cust_dict:
-                current_time += cust_dict[b].service_time
-            else:
-                current_time += 300.0  # Depot service time
+        return routes_geojson, schedule_data
 
-            for n in path:
-                coords.append([G.nodes[n]['x'], G.nodes[n]['y']])
-
-        color = palette[v_idx % len(palette)]
-        if len(coords) > 1:
-            routes_geojson["features"].append({
-                "type": "Feature",
-                "properties": {
-                    "vehicle": v_idx + 1,
-                    "color": color,
-                    "stops": stops_labels
-                },
-                "geometry": {"type": "LineString", "coordinates": coords}
-            })
-
-        schedule_data.append({
-            "vehicle": v_idx + 1,
-            "color": color,
-            "stops": stops_labels,
-            "timeline": stops_timeline,
-            "totalTime_min": round(current_time / 60.0, 1)
-        })
+    routes_by_algorithm = {}
+    schedules_by_algorithm = {}
+    for algorithm, solution in results.items():
+        routes_by_algorithm[algorithm], schedules_by_algorithm[algorithm] = serialize_solution(solution)
 
     return {
         "locations": {
@@ -272,25 +325,19 @@ def run_optimization(req: OptimizationRequest):
             "astar_dist_km": round(astar_dist_km, 2)
         },
         "algorithms": {
-            "QPSO": {
-                "score": round(results['QPSO']['score'], 2),
-                "distance_km": round(qpso_dist_km, 2),
-                "travel_time_min": round(results['QPSO']['travel_time_s'] / 60.0, 1),
-                "history": results['QPSO']['history']
-            },
-            "GA": {
-                "score": round(results['GA']['score'], 2),
-                "distance_km": round(results['GA']['distance_m'] / 1000.0, 2),
-                "travel_time_min": round(results['GA']['travel_time_s'] / 60.0, 1),
-                "history": results['GA']['history']
-            },
-            "A*": {
-                "score": round(results['A*']['score'], 2),
-                "distance_km": round(astar_dist_km, 2),
-                "travel_time_min": round(results['A*']['travel_time_s'] / 60.0, 1),
-                "history": results['A*']['history']
+            algorithm: {
+                "score": round(solution["score"], 2),
+                "distance_km": round(solution["distance_m"] / 1000.0, 2),
+                "travel_time_min": round(solution["travel_time_s"] / 60.0, 1),
+                "total_duration_min": round(solution["total_duration_s"] / 60.0, 1),
+                "tw_penalty": round(solution.get("tw_penalty", 0.0), 2),
+                "total_lateness_s": round(solution.get("total_lateness_s", 0.0), 1),
+                "history": solution["history"],
             }
+            for algorithm, solution in results.items()
         },
-        "routes": routes_geojson,
-        "schedules": schedule_data
+        "routes": routes_by_algorithm["QPSO"],
+        "schedules": schedules_by_algorithm["QPSO"],
+        "routes_by_algorithm": routes_by_algorithm,
+        "schedules_by_algorithm": schedules_by_algorithm,
     }

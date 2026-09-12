@@ -48,7 +48,7 @@ Let:
 The primary objective is:
 
 ```text
-minimize  sum_k sum_i sum_j t_ij x_ijk
+minimize  travel-time + distance-weight * distance + time-window penalties
 ```
 
 Capacity constraint:
@@ -106,4 +106,6 @@ travel_time = free_flow_time * congestion_multiplier
 
 The congestion multiplier is generated from a seeded stochastic scenario.
 
-This gives reproducible simulated traffic. Later, `apply_traffic_scenario()` can be replaced with live traffic data without changing the optimizer
+Traffic is reproducible: generated BPR records are used when node/edge IDs match;
+unmatched locations use a deterministic seed-controlled fallback. The optimizer
+receives the resulting graph and is independent of the traffic data source.

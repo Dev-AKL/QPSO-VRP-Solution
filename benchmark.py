@@ -34,7 +34,16 @@ def run_experiment_task(task_params):
         depot, customer_nodes = choose_stops(G, n, seed=seed)
         rng = np.random.default_rng(seed)
         demands = rng.integers(1, 6, size=len(customer_nodes))
-        customers_obj = [Customer(node=node, demand=float(d)) for node, d in zip(customer_nodes, demands)]
+        customers_obj = [
+            Customer(
+                node=node,
+                demand=float(d),
+                ready_time=32400.0 + float(rng.uniform(0, 7200)),
+                due_time=32400.0 + float(rng.uniform(0, 7200)) + 14400.0,
+                service_time=300.0,
+            )
+            for node, d in zip(customer_nodes, demands)
+        ]
         
         instance = VRPInstance(depot=depot, customers=customers_obj, vehicle_capacity=capacity, num_vehicles=vehicles)
 
@@ -59,8 +68,8 @@ def run_experiment_task(task_params):
                 "Cost": res['score'],
                 "Time_s": exec_time
             })
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"Benchmark task failed (N={n}, seed={seed}): {exc}")
         
     return results_data
 
@@ -108,6 +117,8 @@ def run_throttled_benchmarks():
     print(f"\n✅ Completed safely in {time.perf_counter() - start_time:.2f} seconds.")
 
     df = pd.DataFrame(all_results)
+    if df.empty:
+        raise RuntimeError("No benchmark results were produced; inspect task errors above.")
     valid_df = df[df["Cost"] < 900000].copy()
 
     summary = valid_df.groupby(["N", "Weight", "Capacity", "Vehicles", "Algorithm"]).agg(

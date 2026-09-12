@@ -2,14 +2,21 @@ import numpy as np
 
 class QPSO:
     def __init__(self, evaluate, n_particles=40, iterations=100, seed=42):
+        if n_particles < 1 or iterations < 1:
+            raise ValueError("QPSO requires positive particles and iterations.")
         self.evaluate = evaluate
         self.n_particles = n_particles
         self.iterations = iterations
         self.rng = np.random.default_rng(seed)
         
-    def optimize(self, dimensions):
+    def optimize(self, dimensions, initial_position=None):
         # Initialize particles in continuous random-key space [0, 1]^N (matching GA)
         particles = self.rng.uniform(0, 1, (self.n_particles, dimensions))
+        if initial_position is not None:
+            initial_position = np.asarray(initial_position, dtype=float)
+            if initial_position.shape != (dimensions,):
+                raise ValueError("initial_position has the wrong dimension.")
+            particles[0] = np.clip(initial_position, 0.0, 1.0)
         pbest = particles.copy()
         
         pbest_scores = np.array([self.evaluate(p)[0] for p in particles])
@@ -20,8 +27,10 @@ class QPSO:
         history = [gbest_score]
         
         for it in range(self.iterations):
-            # NON-LINEAR DECAY: Smoothly curves exploration to exploitation, dodging premature local optima
-            alpha = 1.0 - 0.5 * (it / self.iterations) ** 2
+            # A monotonic contraction-expansion schedule gives QPSO a clear
+            # exploration phase followed by exploitation.
+            progress = it / max(1, self.iterations - 1)
+            alpha = 1.0 - 0.5 * progress
             
             # Compute Mean Best Position (mbest) of the swarm
             mbest = np.mean(pbest, axis=0)
@@ -32,7 +41,10 @@ class QPSO:
                 p = phi * pbest[i] + (1 - phi) * gbest
                 
                 # Quantum potential well position update
-                u = self.rng.uniform(0, 1, dimensions)
+                u = np.maximum(
+                    self.rng.uniform(0, 1, dimensions),
+                    np.finfo(float).tiny,
+                )
                 sign = np.where(self.rng.random(dimensions) > 0.5, 1, -1)
                 particles[i] = p + sign * alpha * np.abs(mbest - particles[i]) * np.log(1.0 / u)
                 

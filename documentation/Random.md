@@ -1,6 +1,6 @@
 ## Randomness Documentation
 
-They all originate from a **single master seed** (the `traffic_seed` in the UI), but they absolutely
+Node selection, customer demand, time-window offsets, QPSO, GA, and unmatched-edge traffic all originate from the requested master seed.
 
 Using a single master seed is standard scientific practice for Operations Research. It ensures "Global Reproducibility"—if a judge runs your app with Seed 42, they will see the exact same customers, the exact same traffic jams, and the exact same QPSO convergence curve you saw.
 
@@ -27,17 +27,11 @@ demands = np.clip(demands, 1, capacity)
 
 
 
-**3. Traffic Congestion Multipliers**
+**3. Traffic Congestion**
 
-* **Current Distribution:** Continuous Uniform Distribution.
-* **Mechanism:** Typically `rng.uniform(1.0, 3.0)`. A road is equally likely to be empty (1.0x time) or gridlocked (3.0x time).
-* **How to Change It:** Real traffic follows a **Lognormal** or **Gaussian** distribution with a long tail (most roads are fine, a few are completely jammed). Inside your `apply_traffic_scenario` function, swap it to:
-```python
-# Mean congestion of 1.2x, with some variance. Clipped to ensure it never goes below 1.0 (speed of light).
-raw_congestion = rng.normal(loc=1.2, scale=0.4)
-multiplier = max(1.0, raw_congestion)
-
-```
+* **Current Distribution:** Generated BPR edge records when the traffic dataset matches the graph; otherwise a seeded clipped normal fallback is used.
+* **Mechanism:** `simulated`/`off_peak` and `live`/`rush_hour` select the corresponding traffic scenario. The latter is a deterministic mock, not a live API.
+* **How to Change It:** Replace the CSV loader with a provider-specific traffic adapter while keeping `travel_time_s` and `distance_m` on each edge.
 
 
 

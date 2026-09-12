@@ -17,7 +17,10 @@ def edge_geometry(G, u, v):
     data = G.get_edge_data(u, v)
     if data is None: return None
     if G.is_multigraph():
-        key, attrs = min(list(data.items()), key=lambda item: item[1].get("travel_time_s", float("inf")))
+        key, attrs = min(
+            list(data.items()),
+            key=lambda item: item[1].get("_routing_weight", item[1].get("travel_time_s", float("inf"))),
+        )
     else:
         attrs = data
     geometry = attrs.get("geometry")
@@ -171,6 +174,7 @@ def plot_gantt_chart(G, result, instance):
         y_labels.append(f"Vehicle {vehicle_idx + 1}")
         
         current_time = 0.0
+        clock_time = 32400.0
         
         for i in range(len(route) - 1):
             u, v = route[i], route[i+1]
@@ -189,13 +193,22 @@ def plot_gantt_chart(G, result, instance):
             # Transit Block
             ax.broken_barh([(current_time, segment_time)], (y_pos, 8), facecolors=color, alpha=0.7, edgecolor='white')
             current_time += segment_time
+            clock_time += segment_time
+
+            customer = next((c for c in instance.customers if c.node == v), None)
+            if customer is not None and clock_time < customer.ready_time:
+                waiting = customer.ready_time - clock_time
+                ax.broken_barh([(current_time, waiting)], (y_pos, 8), facecolors="#9ca3af", alpha=0.45, hatch='..')
+                current_time += waiting
+                clock_time = customer.ready_time
             
             # Service Block (Assuming 10 mins / 600s unloading time)
-            if v != instance.depot:
-                ax.broken_barh([(current_time, 600)], (y_pos, 8), facecolors="#111827", hatch='///')
+            if customer is not None:
+                ax.broken_barh([(current_time, 300)], (y_pos, 8), facecolors="#111827", hatch='///')
                 # Inject Universal Label into the timeline block
-                ax.text(current_time + 300, y_pos + 4, labels[v], color="white", fontsize=8, ha='center', va='center', fontweight='bold')
-                current_time += 600
+                ax.text(current_time + 150, y_pos + 4, labels[v], color="white", fontsize=8, ha='center', va='center', fontweight='bold')
+                current_time += 300
+                clock_time += 300
                 
         max_time = max(max_time, current_time)
 

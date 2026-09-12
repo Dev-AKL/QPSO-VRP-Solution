@@ -1,6 +1,5 @@
 import time
 import traceback
-import networkx as nx
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -9,8 +8,9 @@ import matplotlib.pyplot as plt
 from core.baselines import gap_percent
 from core.engine import solve_exact, solve_qpso, solve_random, solve_ga_baseline
 from core.graph_model import load_osm_network
+from core.stop_selection import choose_spread_stops
 from core.traffic import apply_traffic_scenario
-from core.vrp import Customer, VRPInstance
+from core.vrp import Customer, VRPInstance, capacity_feasible
 from core.heuristics import solve_dynamic_heuristic
 from core.visualization import plot_map_view, plot_graph_view, plot_gantt_chart
 
@@ -42,14 +42,6 @@ st.markdown('<div class="hero"><h1>Enterprise Route Optimization Dashboard</h1><
 @st.cache_resource(show_spinner=False)
 def get_network(place_name):
     return load_osm_network(place_name)
-
-def choose_stops(G, n, seed):
-    rng = np.random.default_rng(seed)
-    # CRITICAL FIX: Must be STRONGLY connected to guarantee legal driving paths exist between all nodes
-    components = nx.strongly_connected_components(G) if G.is_directed() else nx.connected_components(G)
-    nodes = np.asarray(list(max(components, key=len)))
-    chosen = rng.choice(nodes, size=n + 1, replace=False)
-    return int(chosen[0]), [int(x) for x in chosen[1:]]
 
 # -----------------------------------------------------------------------------
 # Sidebar
@@ -92,8 +84,15 @@ if run_btn:
                 if 'distance_m' not in data: data['distance_m'] = float(data.get('length', 10.0))
                 if 'travel_time_s' not in data: data['travel_time_s'] = data['distance_m'] / 8.33
             
-            depot, customer_nodes = choose_stops(G, customers_n, seed=int(traffic_seed))
+            depot, customer_nodes = choose_spread_stops(
+                G, customers_n, seed=int(traffic_seed)
+            )
             demands = np.random.default_rng(int(traffic_seed)).integers(1, 8, size=len(customer_nodes))
+            if not capacity_feasible(demands, capacity, vehicles):
+                raise ValueError(
+                    "The generated customer demands cannot be packed into the selected fleet. "
+                    "Increase capacity or fleet size."
+                )
             customers_obj = [Customer(node=n, demand=float(d)) for n, d in zip(customer_nodes, demands)]
             instance = VRPInstance(depot=depot, customers=customers_obj, vehicle_capacity=float(capacity), num_vehicles=int(vehicles))
 
