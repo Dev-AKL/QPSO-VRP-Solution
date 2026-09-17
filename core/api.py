@@ -1,11 +1,13 @@
 import math
 
+import os
 import networkx as nx
 import numpy as np
 import osmnx as ox
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 from typing import Literal
 
 from core.graph_model import add_objective_weights, path_metrics
@@ -15,14 +17,37 @@ from core.engine import solve_qpso, solve_ga_baseline
 from core.heuristics import solve_dynamic_heuristic
 from core.traffic import apply_traffic_scenario
 
+load_dotenv()
+
 app = FastAPI(title="Quantum VRP Dispatch Engine")
+
+def get_allowed_origins() -> list[str]:
+    configured_origins = os.getenv("ALLOWED_ORIGINS", "")
+
+    if configured_origins.strip():
+        return [
+            origin.strip().rstrip("/")
+            for origin in configured_origins.split(",")
+            if origin.strip()
+        ]
+
+    # Safe local-development fallback
+    return [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+    ]
+
+# for checking the allowed CORS origins
+# print("Allowed CORS origins:", get_allowed_origins())
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8501"],
+    allow_origins=get_allowed_origins(),  # parentheses are required
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 GRAPH_CACHE = {}
