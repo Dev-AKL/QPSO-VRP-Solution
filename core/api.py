@@ -49,7 +49,8 @@ def prepare_osm_graph(place_name: str):
         return GRAPH_CACHE[place_name]
 
     # Load unprojected graph (WGS84 EPSG:4326) for GeoJSON GPS coordinates
-    G_raw = ox.graph_from_place(place_name, network_type="drive", simplify=True)
+    G_raw = ox.graph_from_place((22.5867, 88.4171),
+    dist=3000, network_type="drive", simplify=True)
     
     # Guarantee legal bidirectional driving paths exist between all node pairs
     if G_raw.is_directed():
