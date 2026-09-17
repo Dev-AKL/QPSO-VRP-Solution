@@ -16,8 +16,10 @@ from core.heuristics import solve_dynamic_heuristic
 from core.traffic import apply_traffic_scenario
 
 # Use a different Overpass instance than the default
+ox.settings.use_cache = True
+ox.settings.requests_timeout = 300
 ox.settings.overpass_url = "https://overpass.private.coffee/api"
-ox.settings.requests_timeout = 180
+
 
 app = FastAPI(title="Quantum VRP Dispatch Engine")
 
