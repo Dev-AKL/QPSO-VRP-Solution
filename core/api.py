@@ -19,7 +19,7 @@ app = FastAPI(title="Quantum VRP Dispatch Engine")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8501"],
+    allow_origins=["http://localhost:3000", "http://localhost:8501","https://qpso-dashboard-3stc.onrender.com"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
