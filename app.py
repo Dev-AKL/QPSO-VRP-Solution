@@ -198,3 +198,4 @@ with col_b:
     ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left", frameon=False, fontsize=9)
     fig_conv.tight_layout()
     st.pyplot(fig_conv)
+
