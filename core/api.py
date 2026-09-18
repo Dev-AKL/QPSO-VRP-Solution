@@ -1,10 +1,11 @@
 import math
-
 import os
+from dataclasses import asdict
+from datetime import datetime
 import networkx as nx
 import numpy as np
 import osmnx as ox
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -13,9 +14,12 @@ from typing import Literal
 from core.graph_model import add_objective_weights, path_metrics
 from core.stop_selection import choose_spread_stops
 from core.vrp import Customer, VRPInstance, capacity_feasible
-from core.engine import solve_qpso, solve_ga_baseline
+from core.engine import build_routing_data, solve_qpso, solve_ga_baseline
 from core.heuristics import solve_dynamic_heuristic
 from core.traffic import apply_traffic_scenario
+from core.time_dependent import build_time_indexed_matrix
+from core.tomtom_routing import TomTomRoutingError, fetch_live_matrix
+from core.live_traffic_control import LiveTrafficGovernor
 
 load_dotenv()
 
@@ -51,6 +55,7 @@ app.add_middleware(
 )
 
 GRAPH_CACHE = {}
+LIVE_TRAFFIC_GOVERNOR = LiveTrafficGovernor()
 
 class OptimizationRequest(BaseModel):
     place_name: str = Field("Salt Lake, Kolkata, India", min_length=1)
@@ -91,17 +96,31 @@ def prepare_osm_graph(place_name: str):
     return G
 
 @app.post("/api/optimize")
-def run_optimization(req: OptimizationRequest):
+def run_optimization(req: OptimizationRequest, request: Request):
     try:
         G_base = prepare_osm_graph(req.place_name)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load map network: {str(e)}")
 
-    # Bridge frontend terminology to backend telemetry models
-    historical_mode = 'rush_hour' if req.traffic_mode == 'live' else 'off_peak'
-    
-    # Applies exact traversal speeds via cKDTree spatial joining
-    G = apply_traffic_scenario(G_base, mode=historical_mode)
+    # Simulated mode uses the local seeded traffic model. Live mode keeps the
+    # OSM graph for stop selection and geometry, while all optimization costs
+    # come from the live TomTom matrix below.
+    if req.traffic_mode == "live":
+        G = G_base.copy()
+        local_now = datetime.now().astimezone()
+        dispatch_start_s = (
+            local_now.hour * 3600.0
+            + local_now.minute * 60.0
+            + local_now.second
+            + local_now.microsecond / 1_000_000.0
+        )
+    else:
+        G = apply_traffic_scenario(
+            G_base,
+            mode="off_peak",
+            seed=req.traffic_seed,
+        )
+        dispatch_start_s = 32400.0
 
     # Dynamically select nodes directly from the graph
     try:
@@ -131,7 +150,7 @@ def run_optimization(req: OptimizationRequest):
 
     # Convert UI slider (hours) directly into seconds
     strictness_seconds = req.sla_strictness_hours * 3600.0
-    start_of_day = 32400.0 
+    start_of_day = dispatch_start_s
     
     customer_objs = []
     node_to_id = {depot_node: "Depot"}
@@ -173,7 +192,109 @@ def run_optimization(req: OptimizationRequest):
         depot=depot_node,
         customers=customer_objs,
         vehicle_capacity=float(req.vehicle_capacity),
-        num_vehicles=int(req.num_vehicles)
+        num_vehicles=int(req.num_vehicles),
+        dispatch_start_s=dispatch_start_s,
+    )
+
+    # Build one shared matrix and pass it to every algorithm.  Simulated mode
+    # generates it locally; live mode obtains it once from TomTom.  In both
+    # cases no provider request occurs during particle/genome evaluation.
+    stop_nodes = [depot_node] + customer_nodes
+    traffic_summary = None
+    if req.traffic_mode == "live":
+        user_id = (
+            request.client.host
+            if request is not None and request.client is not None
+            else "local-client"
+        )
+        cache_payload = {
+            "place_name": req.place_name.strip().lower(),
+            "stops": [
+                {
+                    "node": str(node),
+                    "lat": round(float(G.nodes[node]["y"]), 7),
+                    "lng": round(float(G.nodes[node]["x"]), 7),
+                }
+                for node in stop_nodes
+            ],
+            "distance_weight": float(req.distance_weight),
+            "travel_mode": "truck",
+            "traffic": "live",
+        }
+        live_cache_key = LIVE_TRAFFIC_GOVERNOR.cache_key(cache_payload)
+
+        try:
+            live_result, decision = LIVE_TRAFFIC_GOVERNOR.get_or_fetch(
+                live_cache_key,
+                user_id,
+                origins=len(stop_nodes),
+                destinations=len(stop_nodes),
+                fetch=lambda: fetch_live_matrix(
+                    G,
+                    stop_nodes,
+                    time_weight=1.0,
+                    distance_weight=req.distance_weight,
+                    dispatch_start_s=dispatch_start_s,
+                    departure_time="now",
+                ),
+            )
+        except TomTomRoutingError as exc:
+            # The local model remains available if the provider is unavailable,
+            # the key is missing, or the request exceeds provider limits.
+            live_result = None
+            decision = LIVE_TRAFFIC_GOVERNOR.decide(
+                user_id, len(stop_nodes), len(stop_nodes)
+            )
+            decision_reason = f"tomtom_request_failed: {exc}"
+        else:
+            decision_reason = decision.reason
+
+        if live_result is not None:
+            time_matrix = live_result.matrix
+            traffic_summary = asdict(live_result.summary)
+            traffic_summary.update(asdict(decision))
+            traffic_summary.update({
+                "requested_mode": "live",
+                "fallback": False,
+            })
+        else:
+            # Preserve the requested live mode in telemetry, but make the
+            # route usable with a deterministic local rush-hour fallback.
+            G = apply_traffic_scenario(
+                G_base,
+                mode="rush_hour",
+                seed=req.traffic_seed,
+            )
+            time_matrix = build_time_indexed_matrix(
+                G,
+                stop_nodes,
+                time_weight=1.0,
+                distance_weight=req.distance_weight,
+                seed=req.traffic_seed,
+                start_s=dispatch_start_s,
+            )
+            traffic_summary = {
+                "provider": "local_fallback",
+                "requested_mode": "live",
+                "fallback": True,
+                "fallback_reason": decision_reason,
+                **asdict(decision),
+            }
+    else:
+        # The seeded dataset is a deterministic off-peak scenario. Use its
+        # traffic-adjusted graph directly as one shared static matrix. A full
+        # time-indexed matrix would copy the entire OSM graph dozens of times
+        # and provide no additional information for this selected scenario.
+        # Live mode retains time-dependent provider/fallback behavior below.
+        time_matrix = None
+
+    # Build the static stop matrix once per request. GA and QPSO use the same
+    # request-scoped data instead of repeating identical Dijkstra searches.
+    routing_data = build_routing_data(
+        G,
+        instance,
+        time_weight=1.0,
+        distance_weight=req.distance_weight,
     )
 
     # 1. Benchmark Execution: A* Baseline, GA, and QPSO
@@ -181,19 +302,30 @@ def run_optimization(req: OptimizationRequest):
     
     # A* Greedy Constructive Baseline
     results['A*'] = solve_dynamic_heuristic(
-        G, instance, method='astar', distance_weight=req.distance_weight
+        G,
+        instance,
+        method='astar',
+        distance_weight=req.distance_weight,
+        time_matrix=time_matrix,
+        dispatch_start_s=dispatch_start_s,
     )
     
     # Genetic Algorithm
     results['GA'] = solve_ga_baseline(
         G, instance, particles=req.particles, iterations=req.iterations,
-        seed=req.traffic_seed, distance_weight=req.distance_weight
+        seed=req.traffic_seed, distance_weight=req.distance_weight,
+        time_matrix=time_matrix,
+        dispatch_start_s=dispatch_start_s,
+        routing_data=routing_data,
     )
     
     # Quantum PSO
     results['QPSO'] = solve_qpso(
         G, instance, particles=req.particles, iterations=req.iterations,
-        seed=req.traffic_seed, distance_weight=req.distance_weight
+        seed=req.traffic_seed, distance_weight=req.distance_weight,
+        time_matrix=time_matrix,
+        dispatch_start_s=dispatch_start_s,
+        routing_data=routing_data,
     )
 
     def first_nonfinite(value, path="result"):
@@ -275,14 +407,28 @@ def run_optimization(req: OptimizationRequest):
             color = palette[v_idx % len(palette)]
             coords = []
             stops_labels = [node_to_id.get(n, str(n)) for n in route]
-            current_time = 32400.0
+            current_time = dispatch_start_s
             route_start = current_time
             stops_timeline = []
 
-            for a, b in zip(route[:-1], route[1:]):
+            for leg_index, (a, b) in enumerate(zip(route[:-1], route[1:])):
+                dynamic_leg = next(
+                    (
+                        leg
+                        for leg in solution.get("leg_metrics", [])
+                        if leg.get("route_index") == v_idx
+                        and leg.get("leg_index") == leg_index
+                    ),
+                    None,
+                )
                 if a == b:
                     path = [a]
                     segment_time = 0.0
+                elif dynamic_leg is not None:
+                    path = dynamic_leg.get("path") or solution.get("paths", {}).get((a, b))
+                    if not path:
+                        path = [a, b]
+                    segment_time = float(dynamic_leg.get("travel_time_s", math.inf))
                 else:
                     path = solution.get("paths", {}).get((a, b))
                     if not path:
@@ -340,6 +486,11 @@ def run_optimization(req: OptimizationRequest):
         "locations": {
             "depot": frontend_depot,
             "customers": frontend_customers
+        },
+        "traffic": traffic_summary or {
+            "provider": "local_seeded",
+            "mode": "simulated",
+            "seed": req.traffic_seed,
         },
         "business_impact": {
             "distance_saved_km": round(dist_saved_km, 2),

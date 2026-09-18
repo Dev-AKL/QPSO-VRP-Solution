@@ -15,6 +15,11 @@ cache/
 # benchmark csv
 vrp_*
 
-#Environmental Variables
-D:\Hackathons\SIH 2026\qpso_cvrptw-master (1)\qpso_cvrptw-master\vrp-dashboard\.env.local
-
+# env files at any depth; keep safe templates version-controlled
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+core/.env

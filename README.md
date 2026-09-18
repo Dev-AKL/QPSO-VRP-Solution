@@ -79,7 +79,7 @@ Browser :3000
    |
    +--> Next.js dashboard
    |       - controls and benchmark table
-   |       - MapLibre/Stadia map
+   |       - MapLibre/OpenStreetMap map
    |       - route animation and node colors
    |       - schedule and benchmark views
    |
@@ -296,7 +296,7 @@ partial GA or A* solution.
 | --- | --- |
 | `app.py` | Optional Streamlit application |
 | `vrp-dashboard/app/page.tsx` | Main dashboard state, controls, API calls, benchmark views |
-| `vrp-dashboard/components/MapViewport.tsx` | MapLibre/Stadia map, routes, nodes, animation, playback controls |
+| `vrp-dashboard/components/MapViewport.tsx` | MapLibre/OpenStreetMap map, routes, nodes, animation, playback controls |
 | `vrp-dashboard/components/TimelineGantt.tsx` | Schedule and time-window visualization |
 | `vrp-dashboard/components/DraggablePanel.tsx` | Draggable/resizable floating panels |
 | `vrp-dashboard/app/globals.css` | Dark UI theme, map controls, responsive layout |
@@ -332,7 +332,6 @@ Create `vrp-dashboard/.env.local`:
 
 ```dotenv
 NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_STADIA_API_KEY=your_stadia_maps_key
 ```
 
 Then open [http://localhost:3000](http://localhost:3000).

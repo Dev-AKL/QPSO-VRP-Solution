@@ -21,6 +21,7 @@ import DraggablePanel from "@/components/DraggablePanel";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 type AlgorithmKey = "QPSO" | "GA" | "A*";
+type TrafficMode = "simulated" | "live";
 type RouteCollection = GeoJSON.FeatureCollection<GeoJSON.LineString, Record<string, unknown>>;
 
 interface AlgorithmSummary {
@@ -42,6 +43,20 @@ interface ScheduleData {
 }
 
 interface DashboardResults {
+  traffic?: {
+    provider: string;
+    requested_mode?: TrafficMode;
+    fallback?: boolean;
+    fallback_reason?: string;
+    cache_hit?: boolean;
+    transaction_estimate?: number;
+    month_transactions?: number;
+    monthly_budget?: number;
+    average_speed_kmh?: number | null;
+    average_traffic_delay_s?: number | null;
+    average_congestion_ratio?: number | null;
+    seed?: number;
+  };
   business_impact: {
     rupees_saved: number;
     liters_saved: number;
@@ -76,7 +91,7 @@ export default function VRPDashboard() {
   const [vehicles, setVehicles] = useState<number[]>([4]);
   const [capacity, setCapacity] = useState<number[]>([25]);
 
-  const [trafficMode, setTrafficMode] = useState("simulated");
+  const [trafficMode, setTrafficMode] = useState<TrafficMode>("simulated");
   const [trafficSeed, setTrafficSeed] = useState(42);
 
   const [distanceWeight, setDistanceWeight] = useState<number[]>([0.2]);
@@ -176,6 +191,14 @@ export default function VRPDashboard() {
         "A* Baseline": Number(results.algorithms["A*"].score.toFixed(1)),
       }))
     : null;
+
+  const trafficStatus = results?.traffic;
+  const trafficProviderLabel = trafficStatus?.fallback
+    ? "Local fallback"
+    : trafficStatus?.provider === "tomtom_live"
+      ? "TomTom live"
+      : "Seeded local";
+  const trafficFallbackReason = trafficStatus?.fallback_reason?.replaceAll("_", " ");
 
   return (
     <div className={`dashboard-shell flex h-dvh min-h-0 w-full max-w-full overflow-hidden bg-background text-foreground font-sans ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -305,7 +328,7 @@ export default function VRPDashboard() {
                 </div>
                 <div className="flex items-center space-x-2 border border-border/50 p-2.5 rounded-md bg-background/50">
                   <RadioGroupItem value="live" id="live" />
-                  <Label htmlFor="live" className="text-sm font-medium leading-none cursor-pointer text-muted-foreground">Live Traffic API (Mock)</Label>
+                  <Label htmlFor="live" className="text-sm font-medium leading-none cursor-pointer">Live Traffic (TomTom)</Label>
                 </div>
               </RadioGroup>
               {trafficMode === "simulated" && (
@@ -318,6 +341,14 @@ export default function VRPDashboard() {
                     onChange={(e) => setTrafficSeed(Number(e.target.value))} 
                     className="h-9 font-mono text-sm"
                   />
+                </div>
+              )}
+              {trafficMode === "live" && (
+                <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-muted-foreground">
+                  <p className="font-medium text-amber-300">Cost-controlled live mode</p>
+                  <p className="mt-1 leading-relaxed">
+                    Uses one TomTom matrix per cache miss. Repeated requests are cached and local rush-hour traffic is used if a live request is blocked or unavailable.
+                  </p>
                 </div>
               )}
             </section>
@@ -400,6 +431,51 @@ export default function VRPDashboard() {
               <div className="flex items-center gap-2 p-3 text-sm bg-destructive/10 border border-destructive/20 text-destructive rounded-lg">
                 <AlertCircle className="h-4 w-4 shrink-0" />
                 <span className="leading-tight">{error}</span>
+              </div>
+            )}
+
+            {trafficStatus && (
+              <div className="rounded-lg border border-border/60 bg-background/50 p-3 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold uppercase tracking-wider text-muted-foreground">Traffic source</span>
+                  <Badge
+                    variant={trafficStatus.fallback ? "destructive" : "outline"}
+                    className={trafficStatus.fallback ? "text-[10px]" : "border-emerald-500/30 text-[10px] text-emerald-400"}
+                  >
+                    {trafficProviderLabel}
+                  </Badge>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
+                  <span>Matrix usage</span>
+                  <span className="text-right font-mono text-foreground">
+                    {trafficStatus.transaction_estimate ?? 0} tx
+                  </span>
+                  <span>Monthly estimate</span>
+                  <span className="text-right font-mono text-foreground">
+                    {trafficStatus.month_transactions ?? 0}/{trafficStatus.monthly_budget ?? "—"}
+                  </span>
+                  {trafficStatus.cache_hit !== undefined && (
+                    <>
+                      <span>Cache</span>
+                      <span className="text-right font-medium text-foreground">
+                        {trafficStatus.cache_hit ? "Hit · no new call" : "Miss · fetched"}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {trafficStatus.average_speed_kmh != null && (
+                  <p className="mt-2 text-muted-foreground">
+                    Avg live speed <span className="font-mono text-foreground">{trafficStatus.average_speed_kmh.toFixed(1)} km/h</span>
+                    {trafficStatus.average_traffic_delay_s != null && (
+                      <> · delay <span className="font-mono text-foreground">{(trafficStatus.average_traffic_delay_s / 60).toFixed(1)} min</span></>
+                    )}
+                  </p>
+                )}
+                {trafficStatus.fallback && trafficFallbackReason && (
+                  <p className="mt-2 leading-relaxed text-destructive">
+                    Fallback: {trafficFallbackReason}
+                  </p>
+                )}
               </div>
             )}
           </div>

@@ -64,6 +64,74 @@ const EMPTY_NODE_COLLECTION: RouteNodeCollection = {
   features: [],
 };
 
+const OPEN_FREE_MAP_STYLE = "https://tiles.openfreemap.org/styles/dark";
+const PREFER_VECTOR_BASEMAP = process.env.NEXT_PUBLIC_ENABLE_VECTOR_BASEMAP === "true";
+
+const OSM_RASTER_FALLBACK_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    openstreetmap: {
+      type: "raster",
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 19,
+      attribution: "&copy; OpenStreetMap contributors",
+    },
+  },
+  layers: [
+    {
+      id: "openstreetmap-dark-background",
+      type: "background",
+      paint: { "background-color": "#1a1a1a" },
+    },
+    {
+      id: "openstreetmap-dark-layer",
+      type: "raster",
+      source: "openstreetmap",
+      minzoom: 0,
+      maxzoom: 19,
+      paint: {
+        "raster-saturation": -1,
+        "raster-contrast": 0.16,
+        "raster-brightness-min": 0.035,
+        "raster-brightness-max": 0.62,
+        "raster-opacity": 0.97,
+        "raster-fade-duration": 0,
+      },
+    },
+  ],
+};
+
+function styleOpenFreeMapLayers(map: maplibregl.Map) {
+  const layers = map.getStyle().layers ?? [];
+  layers.forEach((layer) => {
+    const sourceLayer = String((layer as { "source-layer"?: string })["source-layer"] ?? "").toLowerCase();
+    const layerId = layer.id.toLowerCase();
+
+    try {
+      if (layer.type === "background") {
+        map.setPaintProperty(layer.id, "background-color", "#1a1a1a");
+      } else if (layer.type === "symbol") {
+        map.setPaintProperty(layer.id, "text-color", "#e5e7eb");
+        map.setPaintProperty(layer.id, "text-halo-color", "#1a1a1a");
+        map.setPaintProperty(layer.id, "text-halo-width", 2);
+        map.setPaintProperty(layer.id, "text-halo-blur", 0.35);
+      } else if (layer.type === "fill" && (sourceLayer.includes("water") || layerId.includes("water"))) {
+        map.setPaintProperty(layer.id, "fill-color", "#324b5e");
+      } else if (layer.type === "fill" && (sourceLayer.includes("building") || layerId.includes("building"))) {
+        map.setPaintProperty(layer.id, "fill-color", "#3a3a3a");
+      } else if (layer.type === "line" && (sourceLayer.includes("transportation") || layerId.includes("road"))) {
+        const majorRoad = /motorway|trunk|primary/.test(layerId);
+        map.setPaintProperty(layer.id, "line-color", majorRoad ? "#aaaaaa" : "#888888");
+      }
+    } catch {
+      // Some third-party style layers use expressions that cannot be replaced
+      // safely. Leave those layers untouched instead of breaking the basemap.
+    }
+  });
+}
+
 function isCoordinate(value: unknown): value is Coordinate {
   return (
     Array.isArray(value) &&
@@ -203,7 +271,6 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
   const animationFrameRef = useRef<number | null>(null);
   const overlayFrameRef = useRef<number | null>(null);
   const animationStartedAtRef = useRef<number | null>(null);
-  const apiKey = process.env.NEXT_PUBLIC_STADIA_API_KEY || "";
 
   const [mapLoaded, setMapLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -366,9 +433,6 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
     map.stop();
     map.resize();
 
-    // Do not let the city viewport constraint cancel a fit operation when a
-    // route reaches the edge of the selected service area.
-    map.setMaxBounds(null);
     const longitudeSpan = bounds.getEast() - bounds.getWest();
     const latitudeSpan = bounds.getNorth() - bounds.getSouth();
     if (longitudeSpan < 1e-7 && latitudeSpan < 1e-7) {
@@ -380,8 +444,7 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
         maxZoom: 14,
       });
     }
-    map.once("moveend", () => map.setMaxBounds(CITY_PRESETS[activeCity].bounds));
-  }, [activeCity, mapLoaded, normalizedRoutes, routeNodes, vehicleFilter]);
+  }, [mapLoaded, normalizedRoutes, routeNodes, vehicleFilter]);
 
   const projectedRouteData = useMemo(() => {
     const map = mapInstance;
@@ -426,26 +489,14 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
     const targetCity = CITY_PRESETS["salt-lake"];
-    const style: maplibregl.StyleSpecification = {
-      version: 8,
-      sources: {
-        "stadia-dark": {
-          type: "raster",
-          tiles: [`https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png?api_key=${apiKey}`],
-          tileSize: 256,
-          attribution: "&copy; Stadia Maps &copy; OpenMapTiles &copy; OpenStreetMap contributors",
-        },
-      },
-      layers: [{ id: "stadia-dark-layer", type: "raster", source: "stadia-dark", minzoom: 0, maxzoom: 20 }],
-    };
-
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style,
+      style: PREFER_VECTOR_BASEMAP ? OPEN_FREE_MAP_STYLE : OSM_RASTER_FALLBACK_STYLE,
       center: targetCity.center,
       zoom: targetCity.zoom,
       minZoom: 11,
       maxBounds: targetCity.bounds,
+      renderWorldCopies: false,
       attributionControl: false,
       pitchWithRotate: false,
     });
@@ -545,31 +596,53 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
           "circle-stroke-width": 2,
         },
       });
-      map.on("click", "routes-base-line", (event) => {
-        const vehicle = Number(event.features?.[0]?.properties?.vehicle ?? 0);
-        if (vehicle) {
-          setSelectedVehicle(vehicle);
-          setVehicleFilter(vehicle);
-        }
-      });
-      map.on("mouseenter", "routes-base-line", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", "routes-base-line", () => {
-        map.getCanvas().style.cursor = "";
-      });
+      if (!routeLayerEventsBound) {
+        map.on("click", "routes-base-line", (event) => {
+          const vehicle = Number(event.features?.[0]?.properties?.vehicle ?? 0);
+          if (vehicle) {
+            setSelectedVehicle(vehicle);
+            setVehicleFilter(vehicle);
+          }
+        });
+        map.on("mouseenter", "routes-base-line", () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", "routes-base-line", () => {
+          map.getCanvas().style.cursor = "";
+        });
+        routeLayerEventsBound = true;
+      }
     };
 
+    let usingRasterFallback = !PREFER_VECTOR_BASEMAP;
+    let styleReady = false;
+    let routeLayerEventsBound = false;
+
     const onMapReady = () => {
+      if (styleReady) return;
+      styleReady = true;
+      if (!usingRasterFallback) styleOpenFreeMapLayers(map);
       addRouteLayers();
       setMapLoaded(true);
       map.resize();
     };
-    if (map.isStyleLoaded()) {
-      onMapReady();
-    } else {
-      map.once("load", onMapReady);
-    }
+
+    const switchToRasterFallback = () => {
+      if (usingRasterFallback) return;
+      usingRasterFallback = true;
+      styleReady = false;
+      setMapLoaded(false);
+      map.setStyle(OSM_RASTER_FALLBACK_STYLE);
+    };
+
+    const onMapError = (event: maplibregl.ErrorEvent) => {
+      console.warn("Vector basemap failed; switching to OSM raster fallback.", event.error);
+      switchToRasterFallback();
+    };
+
+    map.on("style.load", onMapReady);
+    map.on("error", onMapError);
+    if (map.isStyleLoaded()) onMapReady();
     mapRef.current = map;
     setMapInstance(map);
     const resizeObserver = new ResizeObserver(() => map.resize());
@@ -587,13 +660,15 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
         overlayFrameRef.current = null;
       }
       mapViewEvents.forEach((eventName) => map.off(eventName, refreshProjectedOverlay));
+      map.off("style.load", onMapReady);
+      map.off("error", onMapError);
       resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
       setMapInstance(null);
       setMapLoaded(false);
     };
-  }, [apiKey, stopAnimation]);
+  }, [stopAnimation]);
 
   useEffect(() => {
     if (!mapRef.current) return;

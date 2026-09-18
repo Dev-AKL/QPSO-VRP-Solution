@@ -15,8 +15,15 @@ Install the following before starting:
 - Python 3.10–3.12
 - Node.js 20.9 or newer and npm
 - Git, if cloning the repository
-- Internet access for the first OSM road-network download and Stadia map tiles
-- A Stadia Maps API key for the map background
+- Internet access for the OSM road-network download and map basemap resources
+
+The dashboard supports an OpenStreetMap-derived OpenFreeMap vector style so road,
+water, building, and label colors can be tuned independently. If the vector
+style or one of its remote resources cannot load, MapLibre automatically falls
+back to the dark OpenStreetMap raster style. For maximum startup reliability,
+the application currently starts with the raster style unless
+`NEXT_PUBLIC_ENABLE_VECTOR_BASEMAP=true` is explicitly configured in
+`vrp-dashboard/.env.local`. No Stadia account or frontend map API key is required.
 
 Python 3.11 and Node.js 20 LTS are recommended for the most predictable setup.
 
@@ -63,22 +70,50 @@ python -m pip install -r requirements.txt
 
 The virtual environment must be activated whenever Python commands are run.
 
-## 4. Configure the Stadia map and frontend API
+## 4. Configure the OpenStreetMap frontend and backend API
 
 Create or edit `vrp-dashboard/.env.local`:
 
 ```dotenv
 NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_STADIA_API_KEY=replace_with_your_stadia_maps_key
 ```
 
-Get a key from [Stadia Maps](https://stadiamaps.com/). The `NEXT_PUBLIC_` prefix
-is required because these values are read by the browser-side dashboard.
+No map provider key is required. The `NEXT_PUBLIC_` prefix is required because
+the backend URL is read by the browser-side dashboard.
 
 After changing `.env.local`, restart the Next.js development server. Never commit
 a real API key to source control.
 
 ## 5. Start the FastAPI backend
+
+### Optional live TomTom traffic mode
+
+The **Simulated (Seeded)** option is fully local and uses the project's seeded
+traffic model. The **Live Traffic API** option sends one server-side Matrix
+Routing request to TomTom for the selected depot and delivery stops. The same
+live distance and traffic-aware travel-time matrix is then used by QPSO, GA,
+and A*; the optimization loop itself makes no additional TomTom requests.
+
+Create a `.env` file in the repository root and keep the key server-side:
+
+```dotenv
+TOMTOM_API_KEY=replace_with_your_tomtom_server_key
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+# Optional live-traffic cost controls
+TOMTOM_LIVE_CACHE_TTL_SECONDS=600
+TOMTOM_MIN_REFRESH_SECONDS=60
+TOMTOM_MAX_LIVE_REQUESTS_PER_HOUR=5
+TOMTOM_MAX_LIVE_REQUESTS_PER_DAY=20
+TOMTOM_MONTHLY_TRANSACTION_BUDGET=2000
+TOMTOM_MAX_LOCATIONS=100
+```
+
+Do **not** put the TomTom key in `vrp-dashboard/.env.local` and do not prefix it
+with `NEXT_PUBLIC_`. Next.js exposes `NEXT_PUBLIC_` values to the browser.
+TomTom live mode requires a valid Matrix Routing entitlement and is subject to
+the limits of the selected TomTom plan. Start with a small number of delivery
+stops while testing.
 
 Open **Terminal 1** at the repository root, activate the environment, and run:
 
@@ -157,7 +192,9 @@ no TypeScript or ESLint errors.
 
 1. Start FastAPI and confirm that `http://localhost:8000/docs` opens.
 2. Start Next.js and open `http://localhost:3000`.
-3. Confirm that the Stadia basemap is visible.
+3. Confirm that the dark OpenStreetMap-derived basemap is visible. The
+   dashboard may show the vector style first or the raster fallback depending
+   on network availability.
 4. Select Salt Lake Sector V or Manhattan.
 5. Choose delivery stops, vehicles, capacity, traffic mode, and optimizer settings.
 6. Click **Initialize Dispatch Sequence**.
@@ -174,10 +211,16 @@ no TypeScript or ESLint errors.
 
 ### The map background is blank
 
-- Confirm `NEXT_PUBLIC_STADIA_API_KEY` is present and valid.
-- Check that the key is enabled for the Stadia tile service.
-- Restart the Next.js server after adding the key.
-- Route overlays may still be generated, but Stadia tiles will not load without a valid key.
+- Confirm the browser has internet access and that requests to
+  `https://tiles.openfreemap.org` and `https://tile.openstreetmap.org` are not
+  blocked by a network policy.
+- Check the browser Network panel for tile requests and the console for mixed
+  content or Content Security Policy errors.
+- Route overlays are independent of the basemap and should still be generated
+  if either basemap provider is temporarily unavailable.
+- Avoid high-volume automated use of the public tile service. For production
+  traffic, use a permitted OSM-derived tile provider or your own tile
+  infrastructure.
 
 ### Optimization takes a long time
 
@@ -192,6 +235,18 @@ no TypeScript or ESLint errors.
 - Reduce the number of delivery stops.
 - Confirm that each generated customer demand can fit into the fleet.
 - For a custom location, confirm that the OSM place name resolves to a sufficiently large connected road network.
+
+### Live traffic mode returns a TomTom error
+
+- Confirm `TOMTOM_API_KEY` is present in the repository-root `.env` file.
+- Make sure the key is active and entitled to Matrix Routing v2.
+- Confirm that the selected location count is within the limits of your TomTom plan.
+- Check that the backend has outbound HTTPS access.
+- Use Simulated (Seeded) mode when testing without a TomTom key or when the provider is unavailable.
+
+When a live request is served from the cache or falls back to the local model,
+the response includes a `traffic` object describing the provider, cache status,
+fallback reason, and estimated monthly transaction usage.
 
 ### PowerShell refuses to activate `.venv`
 

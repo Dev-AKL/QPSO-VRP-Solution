@@ -172,6 +172,13 @@
 
 .maplibregl-map {
   font-family: var(--font-ui-sans);
+  background: #09090b;
+}
+
+/* Keep the standard OSM raster readable in the dashboard's dark theme while
+   leaving route SVGs, markers, and controls at their original colors. */
+.maplibregl-canvas {
+  filter: brightness(0.98) contrast(1.08) saturate(0.72);
 }
 
 .maplibregl-ctrl-top-right {

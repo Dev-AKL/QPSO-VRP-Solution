@@ -3,6 +3,7 @@ import math
 import networkx as nx
 
 from .graph_model import add_objective_weights, path_metrics
+from .time_dependent import build_time_indexed_matrix
 from .vrp import (
     construct_feasible_order,
     evaluate_routes,
@@ -50,6 +51,9 @@ def solve_dynamic_heuristic(
     method="dijkstra",
     time_weight=1.0,
     distance_weight=0.0,
+    time_matrix=None,
+    dispatch_start_s=32400.0,
+    time_dependent=False,
 ):
     """Greedy VRP construction with Dijkstra or admissible A* leg routing.
 
@@ -59,6 +63,14 @@ def solve_dynamic_heuristic(
     weighted_graph = add_objective_weights(
         G, time_weight=time_weight, distance_weight=distance_weight
     )
+    if time_matrix is None and time_dependent:
+        stop_nodes = [instance.depot] + [c.node for c in instance.customers]
+        time_matrix = build_time_indexed_matrix(
+            G,
+            stop_nodes,
+            time_weight=time_weight,
+            distance_weight=distance_weight,
+        )
     demands = {c.node: c.demand for c in instance.customers}
     customers = {c.node: c for c in instance.customers}
     unvisited = list(customers)
@@ -79,7 +91,12 @@ def solve_dynamic_heuristic(
         lower_bound_time = distance / max_speed
         return time_weight * lower_bound_time + distance_weight * distance
 
-    def get_dynamic_path(u, v):
+    def get_dynamic_path(u, v, departure_s=32400.0):
+        if time_matrix is not None:
+            cell = time_matrix.lookup(u, v, departure_s)
+            if not math.isfinite(cell.travel_time_s):
+                return None, math.inf, math.inf, math.inf
+            return list(cell.path), cell.travel_time_s, cell.distance_m, cell.cost
         try:
             if method == "astar":
                 path = nx.astar_path(
@@ -105,7 +122,7 @@ def solve_dynamic_heuristic(
         route = [instance.depot]
         current_load = 0.0
         current_node = instance.depot
-        current_time = 32400.0
+        current_time = dispatch_start_s
 
         while unvisited:
             best = None
@@ -113,7 +130,7 @@ def solve_dynamic_heuristic(
                 if current_load + demands[candidate] > instance.vehicle_capacity:
                     continue
                 path, travel_time, distance, objective_cost = get_dynamic_path(
-                    current_node, candidate
+                    current_node, candidate, current_time
                 )
                 if path is None:
                     continue
@@ -155,7 +172,7 @@ def solve_dynamic_heuristic(
             current_node = candidate
 
         path, travel_time, distance, objective_cost = get_dynamic_path(
-            current_node, instance.depot
+            current_node, instance.depot, current_time
         )
         route.append(instance.depot)
         if path is not None:
@@ -196,7 +213,9 @@ def solve_dynamic_heuristic(
                             distances[(u, v)] = 0.0
                             travel_times[(u, v)] = 0.0
                             continue
-                        path, travel_time, distance, objective_cost = get_dynamic_path(u, v)
+                        path, travel_time, distance, objective_cost = get_dynamic_path(
+                            u, v, dispatch_start_s
+                        )
                         costs[(u, v)] = objective_cost
                         distances[(u, v)] = distance
                         travel_times[(u, v)] = travel_time
@@ -213,6 +232,8 @@ def solve_dynamic_heuristic(
         time_weight=time_weight,
         distance_weight=distance_weight,
         travel_times=travel_times,
+        time_matrix=time_matrix,
+        dispatch_start_s=dispatch_start_s,
     )
     if unvisited:
         score += len(unvisited) * 999999.0

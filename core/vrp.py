@@ -20,6 +20,7 @@ class VRPInstance:
     vehicle_capacity: float
     num_vehicles: int
     time_limit_s: float | None = None
+    dispatch_start_s: float = 32400.0
 
 
 def capacity_feasible(demands, vehicle_capacity, num_vehicles):
@@ -169,7 +170,8 @@ def split_random_key_solution(order, instance: VRPInstance):
 def evaluate_routes(routes, instance, costs, distances, paths, 
                     time_weight=1.0, distance_weight=0.0,
                     congestion_weight=0.0, travel_times=None,
-                    dispatch_start_s=32400.0,
+                    time_matrix=None,
+                    dispatch_start_s=None,
                     lateness_penalty_per_min=10000.0):
     """
     Objective = weighted travel time + distance.
@@ -179,6 +181,9 @@ def evaluate_routes(routes, instance, costs, distances, paths,
     if routes is None:
         return math.inf, {"objective": math.inf}
 
+    if dispatch_start_s is None:
+        dispatch_start_s = float(getattr(instance, "dispatch_start_s", 32400.0))
+
     travel_times = travel_times or costs
 
     total_time = 0.0
@@ -186,15 +191,36 @@ def evaluate_routes(routes, instance, costs, distances, paths,
     total_service = 0.0
     total_waiting = 0.0
     total_lateness = 0.0
+    selected_paths = {}
+    leg_metrics = []
 
-    for route in routes:
+    for route_index, route in enumerate(routes):
         current_time = dispatch_start_s
-        for u, v in zip(route[:-1], route[1:]):
-            c = costs.get((u, v), math.inf)
-            travel_time = travel_times.get((u, v), math.inf)
-            d = distances.get((u, v), math.inf)
+        for leg_index, (u, v) in enumerate(zip(route[:-1], route[1:])):
+            if time_matrix is not None:
+                cell = time_matrix.lookup(u, v, current_time)
+                c = cell.cost
+                travel_time = cell.travel_time_s
+                d = cell.distance_m
+                if cell.path:
+                    selected_paths[(u, v)] = list(cell.path)
+            else:
+                c = costs.get((u, v), math.inf)
+                travel_time = travel_times.get((u, v), math.inf)
+                d = distances.get((u, v), math.inf)
             if not all(math.isfinite(value) for value in (c, travel_time, d)):
                 return math.inf, {"objective": math.inf}
+
+            leg_metrics.append({
+                "route_index": route_index,
+                "leg_index": leg_index,
+                "from": u,
+                "to": v,
+                "travel_time_s": float(travel_time),
+                "distance_m": float(d),
+                "path": list(selected_paths.get((u, v), [])),
+                "departure_time_s": float(current_time),
+            })
 
             total_time += travel_time
             total_distance += d
@@ -227,6 +253,8 @@ def evaluate_routes(routes, instance, costs, distances, paths,
         "tw_penalty": tw_penalty,
         "total_lateness_s": total_lateness,
         "objective": objective,
+        "paths": selected_paths,
+        "leg_metrics": leg_metrics,
     }
 
 # Append this function to the bottom of core/vrp.py
