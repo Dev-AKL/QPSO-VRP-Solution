@@ -24,7 +24,6 @@ type RouteNodeProperties = {
 type RouteNodeCollection = GeoJSON.FeatureCollection<GeoJSON.Point, RouteNodeProperties>;
 type Coordinate = [number, number];
 type VehicleFilter = number | "all";
-
 export interface MapViewportProps {
   routesGeoJSON: RouteCollection | GeoJSON.FeatureCollection<GeoJSON.LineString, Record<string, unknown>> | null | undefined;
   customers: Array<{ id: string; lat: number; lng: number; demand?: number; ready_time?: number; due_time?: number }>;
@@ -64,8 +63,28 @@ const EMPTY_NODE_COLLECTION: RouteNodeCollection = {
   features: [],
 };
 
-const OPEN_FREE_MAP_STYLE = "https://tiles.openfreemap.org/styles/dark";
-const PREFER_VECTOR_BASEMAP = process.env.NEXT_PUBLIC_ENABLE_VECTOR_BASEMAP === "true";
+const STADIA_API_KEY = process.env.NEXT_PUBLIC_STADIA_API_KEY ?? "";
+
+const STADIA_DARK_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    "stadia-dark": {
+      type: "raster",
+      tiles: [`https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png?api_key=${STADIA_API_KEY}`],
+      tileSize: 256,
+      attribution: "&copy; Stadia Maps &copy; OpenMapTiles &copy; OpenStreetMap contributors",
+    },
+  },
+  layers: [
+    {
+      id: "stadia-dark-layer",
+      type: "raster",
+      source: "stadia-dark",
+      minzoom: 0,
+      maxzoom: 20,
+    },
+  ],
+};
 
 const OSM_RASTER_FALLBACK_STYLE: maplibregl.StyleSpecification = {
   version: 8,
@@ -102,35 +121,6 @@ const OSM_RASTER_FALLBACK_STYLE: maplibregl.StyleSpecification = {
     },
   ],
 };
-
-function styleOpenFreeMapLayers(map: maplibregl.Map) {
-  const layers = map.getStyle().layers ?? [];
-  layers.forEach((layer) => {
-    const sourceLayer = String((layer as { "source-layer"?: string })["source-layer"] ?? "").toLowerCase();
-    const layerId = layer.id.toLowerCase();
-
-    try {
-      if (layer.type === "background") {
-        map.setPaintProperty(layer.id, "background-color", "#1a1a1a");
-      } else if (layer.type === "symbol") {
-        map.setPaintProperty(layer.id, "text-color", "#e5e7eb");
-        map.setPaintProperty(layer.id, "text-halo-color", "#1a1a1a");
-        map.setPaintProperty(layer.id, "text-halo-width", 2);
-        map.setPaintProperty(layer.id, "text-halo-blur", 0.35);
-      } else if (layer.type === "fill" && (sourceLayer.includes("water") || layerId.includes("water"))) {
-        map.setPaintProperty(layer.id, "fill-color", "#324b5e");
-      } else if (layer.type === "fill" && (sourceLayer.includes("building") || layerId.includes("building"))) {
-        map.setPaintProperty(layer.id, "fill-color", "#3a3a3a");
-      } else if (layer.type === "line" && (sourceLayer.includes("transportation") || layerId.includes("road"))) {
-        const majorRoad = /motorway|trunk|primary/.test(layerId);
-        map.setPaintProperty(layer.id, "line-color", majorRoad ? "#aaaaaa" : "#888888");
-      }
-    } catch {
-      // Some third-party style layers use expressions that cannot be replaced
-      // safely. Leave those layers untouched instead of breaking the basemap.
-    }
-  });
-}
 
 function isCoordinate(value: unknown): value is Coordinate {
   return (
@@ -261,7 +251,12 @@ function buildRouteNodes(
   };
 }
 
-export default function MapViewport({ routesGeoJSON, customers, depot, activeCity }: MapViewportProps) {
+export default function MapViewport({
+  routesGeoJSON,
+  customers,
+  depot,
+  activeCity,
+}: MapViewportProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const movingMarkersRef = useRef<Map<number, maplibregl.Marker>>(new Map());
@@ -491,7 +486,7 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
     const targetCity = CITY_PRESETS["salt-lake"];
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: PREFER_VECTOR_BASEMAP ? OPEN_FREE_MAP_STYLE : OSM_RASTER_FALLBACK_STYLE,
+      style: STADIA_DARK_STYLE,
       center: targetCity.center,
       zoom: targetCity.zoom,
       minZoom: 11,
@@ -614,14 +609,13 @@ export default function MapViewport({ routesGeoJSON, customers, depot, activeCit
       }
     };
 
-    let usingRasterFallback = !PREFER_VECTOR_BASEMAP;
+    let usingRasterFallback = false;
     let styleReady = false;
     let routeLayerEventsBound = false;
 
     const onMapReady = () => {
       if (styleReady) return;
       styleReady = true;
-      if (!usingRasterFallback) styleOpenFreeMapLayers(map);
       addRouteLayers();
       setMapLoaded(true);
       map.resize();

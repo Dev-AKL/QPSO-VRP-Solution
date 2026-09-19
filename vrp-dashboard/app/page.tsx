@@ -13,7 +13,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { 
-  Truck, Play, RefreshCw, AlertCircle, Layers, CalendarDays, Table as TableIcon,
+  Truck, Play, RefreshCw, AlertCircle, Layers, GitBranch, CalendarDays, Table as TableIcon,
   PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import TimelineGantt from "@/components/TimelineGantt";
@@ -77,6 +77,10 @@ interface DashboardResults {
 const MapViewport = dynamic(
   () => import("@/components/MapViewport").then((mod) => mod.default),
   { ssr: false }
+);
+const GraphSimulation = dynamic(
+  () => import("@/components/GraphSimulation").then((mod) => mod.default),
+  { ssr: false },
 );
 
 export default function VRPDashboard() {
@@ -542,6 +546,7 @@ export default function VRPDashboard() {
           >
             <TabsList className="max-w-[calc(100vw-1rem)] overflow-x-auto bg-transparent shadow-none">
               <TabsTrigger value="spatial" className="text-xs font-medium gap-1.5"><Layers className="h-3.5 w-3.5" /> Spatial GIS</TabsTrigger>
+              <TabsTrigger value="graph" className="text-xs font-medium gap-1.5"><GitBranch className="h-3.5 w-3.5" /> Graph Simulation</TabsTrigger>
               <TabsTrigger value="temporal" className="text-xs font-medium gap-1.5"><CalendarDays className="h-3.5 w-3.5" /> Gantt Schedule</TabsTrigger>
               <TabsTrigger value="benchmarks" className="text-xs font-medium gap-1.5"><TableIcon className="h-3.5 w-3.5" /> Benchmarks</TabsTrigger>
             </TabsList>
@@ -556,6 +561,16 @@ export default function VRPDashboard() {
                   activeCity={activeCity}
                 />
             </div>
+          </TabsContent>
+
+          <TabsContent value="graph" className="relative m-0 h-full min-h-0 min-w-0 w-full flex-1">
+            <GraphSimulation
+              activeCity={activeCity}
+              trafficMode={trafficMode}
+              trafficSeed={trafficSeed}
+              distanceWeight={distanceWeight[0] ?? 0.2}
+              routesGeoJSON={results?.routes_by_algorithm?.[inspectAlgo] ?? results?.routes}
+            />
           </TabsContent>
 
           <TabsContent value="temporal" className="m-0 h-full min-h-0 w-full flex-1 overflow-y-auto bg-background p-6 pt-20">

@@ -5,7 +5,7 @@ from datetime import datetime
 import networkx as nx
 import numpy as np
 import osmnx as ox
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -57,6 +57,17 @@ app.add_middleware(
 GRAPH_CACHE = {}
 LIVE_TRAFFIC_GOVERNOR = LiveTrafficGovernor()
 
+REGION_CONFIG = {
+    "salt-lake": {
+        "place_name": "Salt Lake, Kolkata, India",
+        "bounds": ((88.25, 22.40), (88.60, 22.75)),
+    },
+    "manhattan": {
+        "place_name": "Manhattan, New York, USA",
+        "bounds": ((-74.15, 40.60), (-73.75, 40.95)),
+    },
+}
+
 class OptimizationRequest(BaseModel):
     place_name: str = Field("Salt Lake, Kolkata, India", min_length=1)
     customers_n: int = Field(10, ge=1, le=500)
@@ -94,6 +105,85 @@ def prepare_osm_graph(place_name: str):
 
     GRAPH_CACHE[place_name] = G
     return G
+
+
+@app.get("/api/graph")
+def get_region_graph(
+    region: Literal["salt-lake", "manhattan"] = Query("salt-lake"),
+    traffic_mode: Literal["simulated", "live"] = Query("simulated"),
+    traffic_seed: int = Query(42),
+    distance_weight: float = Query(0.2, ge=0),
+):
+    """Return weighted road edges clipped to one supported dashboard region."""
+    config = REGION_CONFIG[region]
+    try:
+        graph_base = prepare_osm_graph(config["place_name"])
+        graph = (
+            apply_traffic_scenario(graph_base, mode="off_peak", seed=traffic_seed)
+            if traffic_mode == "simulated"
+            else graph_base
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to load region graph: {exc}")
+
+    (west, south), (east, north) = config["bounds"]
+
+    def in_bounds(node):
+        data = graph.nodes[node]
+        return west <= float(data.get("x", 0)) <= east and south <= float(data.get("y", 0)) <= north
+
+    region_nodes = {node for node in graph.nodes if in_bounds(node)}
+    raw_edges = []
+    edge_iter = graph.edges(keys=True, data=True) if graph.is_multigraph() else graph.edges(data=True)
+    for edge in edge_iter:
+        if graph.is_multigraph():
+            source, target, _, data = edge
+        else:
+            source, target, data = edge
+        if source not in region_nodes or target not in region_nodes:
+            continue
+
+        distance_m = float(data.get("distance_m", data.get("length", 0.0)))
+        travel_time_s = float(data.get("travel_time_s", 0.0))
+        weight = travel_time_s + distance_weight * distance_m
+        geometry = data.get("geometry")
+        if geometry is not None and hasattr(geometry, "coords"):
+            coordinates = [[float(x), float(y)] for x, y in geometry.coords]
+        else:
+            coordinates = [
+                [float(graph.nodes[source]["x"]), float(graph.nodes[source]["y"])],
+                [float(graph.nodes[target]["x"]), float(graph.nodes[target]["y"])],
+            ]
+        raw_edges.append({
+            "source": str(source),
+            "target": str(target),
+            "distance_m": round(distance_m, 2),
+            "travel_time_s": round(travel_time_s, 2),
+            "weight": round(weight, 2),
+            "speed_kmh": round(float(data.get("speed_kmh", 0.0)), 2),
+            "coordinates": coordinates,
+        })
+
+    weights = [edge["weight"] for edge in raw_edges]
+    minimum = min(weights, default=0.0)
+    maximum = max(weights, default=minimum)
+    spread = maximum - minimum
+    features = []
+    for edge in raw_edges:
+        edge["weight_ratio"] = round((edge["weight"] - minimum) / spread, 4) if spread > 0 else 0.0
+        features.append({
+            "type": "Feature",
+            "properties": {key: value for key, value in edge.items() if key != "coordinates"},
+            "geometry": {"type": "LineString", "coordinates": edge["coordinates"]},
+        })
+
+    return {
+        "region": region,
+        "traffic_mode": traffic_mode,
+        "bounds": [[west, south], [east, north]],
+        "stats": {"nodes": len(region_nodes), "edges": len(features)},
+        "edges": {"type": "FeatureCollection", "features": features},
+    }
 
 @app.post("/api/optimize")
 def run_optimization(req: OptimizationRequest, request: Request):
