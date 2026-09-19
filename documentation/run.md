@@ -17,13 +17,10 @@ Install the following before starting:
 - Git, if cloning the repository
 - Internet access for the OSM road-network download and map basemap resources
 
-The dashboard supports an OpenStreetMap-derived OpenFreeMap vector style so road,
-water, building, and label colors can be tuned independently. If the vector
-style or one of its remote resources cannot load, MapLibre automatically falls
-back to the dark OpenStreetMap raster style. For maximum startup reliability,
-the application currently starts with the raster style unless
-`NEXT_PUBLIC_ENABLE_VECTOR_BASEMAP=true` is explicitly configured in
-`vrp-dashboard/.env.local`. No Stadia account or frontend map API key is required.
+The prototype Stadia branch uses the Stadia dark raster style for the polished
+map presentation. Configure its browser-visible key in `vrp-dashboard/.env.local`.
+The production OpenStreetMap/vector-fallback workflow remains on the main
+development line.
 
 Python 3.11 and Node.js 20 LTS are recommended for the most predictable setup.
 
@@ -70,16 +67,17 @@ python -m pip install -r requirements.txt
 
 The virtual environment must be activated whenever Python commands are run.
 
-## 4. Configure the OpenStreetMap frontend and backend API
+## 4. Configure the prototype map and frontend API
 
 Create or edit `vrp-dashboard/.env.local`:
 
 ```dotenv
 NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_STADIA_API_KEY=replace_with_your_stadia_maps_key
 ```
 
-No map provider key is required. The `NEXT_PUBLIC_` prefix is required because
-the backend URL is read by the browser-side dashboard.
+The `NEXT_PUBLIC_` prefix is required because these values are read by the
+browser-side dashboard. Never commit the real Stadia key.
 
 After changing `.env.local`, restart the Next.js development server. Never commit
 a real API key to source control.
@@ -192,9 +190,7 @@ no TypeScript or ESLint errors.
 
 1. Start FastAPI and confirm that `http://localhost:8000/docs` opens.
 2. Start Next.js and open `http://localhost:3000`.
-3. Confirm that the dark OpenStreetMap-derived basemap is visible. The
-   dashboard may show the vector style first or the raster fallback depending
-   on network availability.
+3. Confirm that the Stadia dark basemap is visible.
 4. Select Salt Lake Sector V or Manhattan.
 5. Choose delivery stops, vehicles, capacity, traffic mode, and optimizer settings.
 6. Click **Initialize Dispatch Sequence**.
@@ -212,15 +208,12 @@ no TypeScript or ESLint errors.
 ### The map background is blank
 
 - Confirm the browser has internet access and that requests to
-  `https://tiles.openfreemap.org` and `https://tile.openstreetmap.org` are not
-  blocked by a network policy.
+  `https://tiles.stadiamaps.com` are not blocked.
+- Confirm `NEXT_PUBLIC_STADIA_API_KEY` is present and valid.
 - Check the browser Network panel for tile requests and the console for mixed
   content or Content Security Policy errors.
-- Route overlays are independent of the basemap and should still be generated
-  if either basemap provider is temporarily unavailable.
-- Avoid high-volume automated use of the public tile service. For production
-  traffic, use a permitted OSM-derived tile provider or your own tile
-  infrastructure.
+- Route overlays are independent of the basemap and may still be generated if
+  Stadia tiles are temporarily unavailable.
 
 ### Optimization takes a long time
 
