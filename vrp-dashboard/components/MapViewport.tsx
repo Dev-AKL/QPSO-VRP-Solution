@@ -33,22 +33,25 @@ export interface MapViewportProps {
 
 const CITY_PRESETS: Record<
   "salt-lake" | "manhattan",
-  { center: [number, number]; zoom: number; bounds: maplibregl.LngLatBoundsLike }
+  { center: [number, number]; zoom: number; minZoom: number; bounds: maplibregl.LngLatBoundsLike }
 > = {
   "salt-lake": {
+    // Salt Lake Sector V / Bidhannagar service area only.
     center: [88.433, 22.58],
-    zoom: 12.7,
+    zoom: 14.2,
+    minZoom: 14,
     bounds: [
-      [88.25, 22.4],
-      [88.6, 22.75],
+      [88.39, 22.54],
+      [88.47, 22.63],
     ],
   },
   manhattan: {
     center: [-73.9712, 40.7831],
-    zoom: 12.2,
+    zoom: 13.1,
+    minZoom: 12.8,
     bounds: [
-      [-74.15, 40.6],
-      [-73.75, 40.95],
+      [-74.048, 40.680],
+      [-73.907, 40.882],
     ],
   },
 };
@@ -489,7 +492,7 @@ export default function MapViewport({
       style: STADIA_DARK_STYLE,
       center: targetCity.center,
       zoom: targetCity.zoom,
-      minZoom: 11,
+      minZoom: targetCity.minZoom,
       maxBounds: targetCity.bounds,
       renderWorldCopies: false,
       attributionControl: false,
@@ -668,13 +671,13 @@ export default function MapViewport({
     if (!mapRef.current) return;
     const map = mapRef.current;
     const targetCity = CITY_PRESETS[activeCity];
-    map.setMaxBounds(null);
+    // Keep the restriction active during the transition as well. Clearing
+    // maxBounds even briefly lets the user drag into another district while
+    // the new region is loading and can cause Stadia to request those tiles.
+    map.stop();
+    map.setMaxBounds(targetCity.bounds);
+    map.setMinZoom(targetCity.minZoom);
     map.flyTo({ center: targetCity.center, zoom: targetCity.zoom, duration: 1200 });
-    const reapplyBounds = () => map.setMaxBounds(targetCity.bounds);
-    map.once("moveend", reapplyBounds);
-    return () => {
-      map.off("moveend", reapplyBounds);
-    };
   }, [activeCity]);
 
   useEffect(() => {
