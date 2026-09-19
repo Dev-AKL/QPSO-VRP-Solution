@@ -14,6 +14,7 @@ from .vrp import (
 from .qpso import QPSO
 from .baselines import run_random_search, run_exact_small
 from .ga import run_ga
+from .aco import run_aco
 
 
 def _feasible_random_key(instance):
@@ -269,6 +270,43 @@ def solve_ga_baseline(
     )
     _, result = ga_eval(best_x)
     return _result_payload("Genetic Algorithm", score, history, result, paths)
+
+
+def solve_aco(
+    G, instance, particles=40, iterations=100, seed=42,
+    time_weight=1.0, distance_weight=0.0, time_matrix=None,
+    dispatch_start_s=32400.0, routing_data=None,
+):
+    """Run ACO as a fourth benchmark using the shared VRP evaluator."""
+    evaluate, paths = build_optimizer(
+        G, instance, time_weight=time_weight, distance_weight=distance_weight,
+        seed=seed,
+        time_matrix=time_matrix,
+        dispatch_start_s=dispatch_start_s,
+        routing_data=routing_data,
+    )
+    _, initial_permutation = _feasible_random_key(instance)
+    customers = [customer.node for customer in instance.customers]
+    costs, _, _, _ = routing_data or build_routing_data(
+        G, instance, time_weight=time_weight, distance_weight=distance_weight
+    )
+    transition_cost = np.asarray([
+        [costs.get((customers[left], customers[right]), math.inf)
+         for right in range(len(customers))]
+        for left in range(len(customers))
+    ], dtype=float)
+    aco_eval = lambda pos: evaluate(pos, apply_quantum_annealing=False)
+    best_x, score, history = run_aco(
+        evaluate_fn=aco_eval,
+        dimensions=len(customers),
+        transition_cost=transition_cost,
+        colony_size=particles,
+        iterations=iterations,
+        seed=seed,
+        initial_permutation=initial_permutation,
+    )
+    _, result = aco_eval(best_x)
+    return _result_payload("Ant Colony Optimization", score, history, result, paths)
 
 
 def solve_random(
