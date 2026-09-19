@@ -20,7 +20,7 @@ import TimelineGantt from "@/components/TimelineGantt";
 import DraggablePanel from "@/components/DraggablePanel";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-type AlgorithmKey = "QPSO" | "GA" | "ACO" | "A*";
+type AlgorithmKey = "QPSO" | "GA" | "ACO" | "PSO" | "A*";
 type TrafficMode = "simulated" | "live";
 type RouteCollection = GeoJSON.FeatureCollection<GeoJSON.LineString, Record<string, unknown>>;
 
@@ -184,6 +184,7 @@ export default function VRPDashboard() {
           results.algorithms.QPSO.history.length,
           results.algorithms.GA.history.length,
           results.algorithms.ACO.history.length,
+          results.algorithms.PSO.history.length,
         ),
       }, (_, idx) => ({
         iteration: idx + 1,
@@ -196,6 +197,9 @@ export default function VRPDashboard() {
         ACO: results.algorithms.ACO.history[idx] == null
           ? null
           : Number(results.algorithms.ACO.history[idx].toFixed(1)),
+        PSO: results.algorithms.PSO.history[idx] == null
+          ? null
+          : Number(results.algorithms.PSO.history[idx].toFixed(1)),
         "A* Baseline": Number(results.algorithms["A*"].score.toFixed(1)),
       }))
     : null;
@@ -412,8 +416,8 @@ export default function VRPDashboard() {
                 <h2 className="scroll-m-20 border-b border-border/50 pb-2 text-sm font-semibold tracking-tight uppercase text-muted-foreground">
                   4. Inspect Algorithm
                 </h2>
-                <RadioGroup value={inspectAlgo} onValueChange={(value) => setInspectAlgo(value as AlgorithmKey)} className="grid grid-cols-4 gap-2">
-                  {['QPSO', 'GA', 'ACO', 'A*'].map((algo) => (
+                <RadioGroup value={inspectAlgo} onValueChange={(value) => setInspectAlgo(value as AlgorithmKey)} className="grid grid-cols-5 gap-2">
+                  {['QPSO', 'GA', 'ACO', 'PSO', 'A*'].map((algo) => (
                     <div key={algo} className={`flex items-center space-x-2 border p-2 rounded-md justify-center transition-colors ${inspectAlgo === algo ? 'border-primary/50 bg-primary/10' : 'border-border/50 bg-background/50'}`}>
                       <RadioGroupItem value={algo} id={algo} className="hidden" />
                       <Label htmlFor={algo} className={`text-xs font-bold cursor-pointer ${inspectAlgo === algo ? 'text-primary' : 'text-muted-foreground'}`}>{algo}</Label>
@@ -635,6 +639,15 @@ export default function VRPDashboard() {
                               </TableCell>
                             </TableRow>
                             <TableRow>
+                              <TableCell className="font-medium">Particle Swarm Optimization</TableCell>
+                              <TableCell className="text-right font-mono">{results.algorithms.PSO.score.toFixed(2)}</TableCell>
+                              <TableCell className="text-right font-mono">{results.algorithms.PSO.distance_km.toFixed(2)} km</TableCell>
+                              <TableCell className="text-right font-mono">{results.algorithms.PSO.travel_time_min.toFixed(1)} min</TableCell>
+                              <TableCell className={`text-right font-mono font-bold ${results.algorithms.PSO.tw_penalty > 0 ? "text-destructive" : "text-emerald-400"}`}>
+                                {results.algorithms.PSO.tw_penalty > 0 ? "Massive Delay (Late)" : "Zero Penalties"}
+                              </TableCell>
+                            </TableRow>
+                            <TableRow>
                               <TableCell className="font-medium text-muted-foreground">A* Constructive Baseline</TableCell>
                               <TableCell className="text-right font-mono text-muted-foreground">{results.algorithms["A*"].score.toFixed(2)}</TableCell>
                               <TableCell className="text-right font-mono text-muted-foreground">{results.algorithms["A*"].distance_km.toFixed(2)} km</TableCell>
@@ -676,6 +689,7 @@ export default function VRPDashboard() {
                         <Line name="QPSO" type="monotone" dataKey="QPSO" stroke="#D90429" strokeWidth={3} dot={false} />
                         <Line name="Genetic Algo" type="monotone" dataKey="GA" stroke="#F4A261" strokeWidth={2} dot={false} />
                         <Line name="Ant Colony" type="monotone" dataKey="ACO" stroke="#22D3EE" strokeWidth={2} dot={false} />
+                        <Line name="Particle Swarm" type="monotone" dataKey="PSO" stroke="#A3E635" strokeWidth={2} dot={false} />
                         <Line name="A* Baseline" type="stepAfter" dataKey="A* Baseline" stroke="#71717a" strokeWidth={2} strokeDasharray="5 5" dot={false} />
                       </LineChart>
                     </ResponsiveContainer>

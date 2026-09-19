@@ -2,7 +2,7 @@ import unittest
 
 import networkx as nx
 
-from core.engine import build_optimizer, solve_aco, solve_ga_baseline, solve_qpso
+from core.engine import build_optimizer, solve_aco, solve_ga_baseline, solve_pso, solve_qpso
 from core.graph_model import route_distance
 from core.heuristics import solve_dynamic_heuristic
 from core.vrp import Customer, VRPInstance
@@ -83,6 +83,7 @@ class CoreRegressionTests(unittest.TestCase):
             solve_dynamic_heuristic(graph, instance, method="astar"),
             solve_ga_baseline(graph, instance, particles=8, iterations=8, seed=7),
             solve_aco(graph, instance, particles=8, iterations=8, seed=7),
+            solve_pso(graph, instance, particles=8, iterations=8, seed=7),
             solve_qpso(graph, instance, particles=8, iterations=8, seed=7),
         ]
         for solution in solutions:

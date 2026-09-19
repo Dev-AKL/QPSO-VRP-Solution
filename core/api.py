@@ -14,7 +14,7 @@ from typing import Literal
 from core.graph_model import add_objective_weights, path_metrics
 from core.stop_selection import choose_spread_stops
 from core.vrp import Customer, VRPInstance, capacity_feasible
-from core.engine import build_routing_data, solve_qpso, solve_ga_baseline, solve_aco
+from core.engine import build_routing_data, solve_qpso, solve_ga_baseline, solve_aco, solve_pso
 from core.heuristics import solve_dynamic_heuristic
 from core.traffic import apply_traffic_scenario
 from core.time_dependent import build_time_indexed_matrix
@@ -387,7 +387,7 @@ def run_optimization(req: OptimizationRequest, request: Request):
         distance_weight=req.distance_weight,
     )
 
-    # 1. Benchmark Execution: A* Baseline, GA, ACO, and QPSO
+    # 1. Benchmark Execution: A* Baseline, GA, ACO, PSO, and QPSO
     results = {}
     
     # A* Greedy Constructive Baseline
@@ -412,6 +412,15 @@ def run_optimization(req: OptimizationRequest, request: Request):
     # Ant Colony Optimization benchmark. It receives the exact same instance,
     # traffic matrix, objective, and initial customer set as the other solvers.
     results['ACO'] = solve_aco(
+        G, instance, particles=req.particles, iterations=req.iterations,
+        seed=req.traffic_seed, distance_weight=req.distance_weight,
+        time_matrix=time_matrix,
+        dispatch_start_s=dispatch_start_s,
+        routing_data=routing_data,
+    )
+
+    # Classical Particle Swarm Optimization benchmark.
+    results['PSO'] = solve_pso(
         G, instance, particles=req.particles, iterations=req.iterations,
         seed=req.traffic_seed, distance_weight=req.distance_weight,
         time_matrix=time_matrix,

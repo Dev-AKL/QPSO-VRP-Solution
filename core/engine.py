@@ -15,6 +15,7 @@ from .qpso import QPSO
 from .baselines import run_random_search, run_exact_small
 from .ga import run_ga
 from .aco import run_aco
+from .pso import PSO
 
 
 def _feasible_random_key(instance):
@@ -307,6 +308,34 @@ def solve_aco(
     )
     _, result = aco_eval(best_x)
     return _result_payload("Ant Colony Optimization", score, history, result, paths)
+
+
+def solve_pso(
+    G, instance, particles=40, iterations=100, seed=42,
+    time_weight=1.0, distance_weight=0.0, time_matrix=None,
+    dispatch_start_s=32400.0, routing_data=None,
+):
+    """Run classical PSO as a benchmark using the shared route evaluator."""
+    evaluate, paths = build_optimizer(
+        G, instance, time_weight=time_weight, distance_weight=distance_weight,
+        seed=seed,
+        time_matrix=time_matrix,
+        dispatch_start_s=dispatch_start_s,
+        routing_data=routing_data,
+    )
+    initial_key, _ = _feasible_random_key(instance)
+    pso_eval = lambda pos: evaluate(pos, apply_quantum_annealing=False)
+    optimizer = PSO(
+        evaluate=pso_eval,
+        n_particles=particles,
+        iterations=iterations,
+        seed=seed,
+    )
+    best_x, score, history = optimizer.optimize(
+        len(instance.customers), initial_position=initial_key
+    )
+    _, result = pso_eval(best_x)
+    return _result_payload("Particle Swarm Optimization", score, history, result, paths)
 
 
 def solve_random(

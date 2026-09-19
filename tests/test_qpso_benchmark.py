@@ -19,7 +19,7 @@ import unittest
 import networkx as nx
 import numpy as np
 
-from core.engine import solve_aco, solve_ga_baseline, solve_qpso
+from core.engine import solve_aco, solve_ga_baseline, solve_pso, solve_qpso
 from core.heuristics import solve_dynamic_heuristic
 from core.vrp import Customer, VRPInstance
 
@@ -109,6 +109,15 @@ def run_algorithms(graph, instance, seed):
             distance_weight=DISTANCE_WEIGHT,
         ),
         "ACO": solve_aco(
+            graph,
+            instance,
+            particles=PARTICLES,
+            iterations=ITERATIONS,
+            seed=seed,
+            time_weight=TIME_WEIGHT,
+            distance_weight=DISTANCE_WEIGHT,
+        ),
+        "PSO": solve_pso(
             graph,
             instance,
             particles=PARTICLES,
